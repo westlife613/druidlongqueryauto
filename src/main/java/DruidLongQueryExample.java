@@ -6,6 +6,10 @@ import java.sql.SQLException;
 import java.sql.Statement;
 import java.text.SimpleDateFormat;
 import java.util.Date;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
 
 /**
  * Druid连接池长查询测试脚本
@@ -377,7 +381,7 @@ public class DruidLongQueryExample {
     /**
      * 日志输出
      */
-    private static void log(String message) {
+    private static synchronized void log(String message) {
         System.out.println("[" + dateFormat.format(new Date()) + "] " + message);
     }
 
@@ -389,6 +393,7 @@ public class DruidLongQueryExample {
             log("========================================");
             log("  Druid Database Disconnection Testing Tool");
             log("  Environment: AWS");
+            log("  Mode: Multi-threaded - Reuse Connections");
             log("========================================\n");
             
             // 打印AWS环境信息（如果设置了环境变量）
@@ -405,43 +410,113 @@ public class DruidLongQueryExample {
             initDataSource();
             printPoolStatus();
             
-            // 2. 初始化测试数据（仅H2数据库 - 本地测试用，AWS部署时已注释）
-            // if (DB_URL.contains("h2")) {
-            //     initTestData();
-            // }
+            // 2. 配置SQL语句（业务SQL + SLEEP）
+            String sql = "select SLEEP(10), count(distinct a.mt4_account) from tb_account_mt4 a join tb_user on a.user_id = tb_user.id and tb_user.is_del = 0 join tb_user_relation ur_parent on a.user_id = ur_parent.user_id and ur_parent.is_del = 0 join tb_user_account_mt4_relation on a.mt4_account = tb_user_account_mt4_relation.mt4_account and tb_user_account_mt4_relation.is_del = 0 join tb_user ua_parent on tb_user_account_mt4_relation.p_id = ua_parent.id left join tb_user_extends on a.user_id = tb_user_extends.user_id join tb_user_outer on a.user_id = tb_user_outer.user_id where a.is_del = 0 and a.mt4_account is not null and ur_parent.org_id in (1,100,101,103,121,286,105,119,287,288,154,156,155,219,220,221,226,164,368,169,170,176,177,215,289,172,184,290,185,173,228,239,264,355,357,358,367,374,379,381,387,388,389,241,337,346,377,378,338,339,340,342,350,351,380,385,386,123,136,187,364,137,138,160,188,168,190,200,201,277,278,269,270,275,276,375,285,124,125,126,128,189,191,192,196,197,222,371,372,223,227,291,292,365,274,352,363,370,373,376,393,353,356,359,360,361,362,382,390,391,366,383,384,392,127,133,134,135,139,140,141,159,161,354,165,166,167,193) and (a.is_archive = 0 or a.is_archive is null) and a.accountDealType = 3 and a.approved_time >= '2015-01-01 00:00:00' and a.approved_time <= '2026-01-19 15:00:08'";
             
-            // 3. Configure test SQL (modify to your actual table and query)
-            String sql = "select count(distinct a.mt4_account) from tb_account_mt4 a join tb_user on a.user_id = tb_user.id and tb_user.is_del = 0 join tb_user_relation ur_parent on a.user_id = ur_parent.user_id and ur_parent.is_del = 0 join tb_user_account_mt4_relation on a.mt4_account = tb_user_account_mt4_relation.mt4_account and tb_user_account_mt4_relation.is_del = 0 join tb_user ua_parent on tb_user_account_mt4_relation.p_id = ua_parent.id left join tb_user_extends on a.user_id = tb_user_extends.user_id join tb_user_outer on a.user_id = tb_user_outer.user_id where a.is_del = 0 and a.mt4_account is not null and ur_parent.org_id in (1,100,101,103,121,286,105,119,287,288,154,156,155,219,220,221,226,164,368,169,170,176,177,215,289,172,184,290,185,173,228,239,264,355,357,358,367,374,379,381,387,388,389,241,337,346,377,378,338,339,340,342,350,351,380,385,386,123,136,187,364,137,138,160,188,168,190,200,201,277,278,269,270,275,276,375,285,124,125,126,128,189,191,192,196,197,222,371,372,223,227,291,292,365,274,352,363,370,373,376,393,353,356,359,360,361,362,382,390,391,366,383,384,392,127,133,134,135,139,140,141,159,161,354,165,166,167,193) and (a.is_archive = 0 or a.is_archive is null) and a.accountDealType = 3 and a.approved_time >= '2015-01-01 00:00:00' and a.approved_time <= '2026-01-19 15:00:08'";
+            // 3. 多线程持续复用连接测试
+            log("\n===== Multi-threaded Mode: 120 Threads Reuse Connections =====");
+            log("Connection Pool maxActive: " + dataSource.getMaxActive());
+            log("Strategy: 120 threads, each gets 1 connection and reuses it continuously");
+            log("Expected: All 120 connections occupied, run for 24 hours\n");
             
-            log("Test SQL: " + sql);
-            log("\n===== Loop Execution Mode: Run for 24 hours, execute every 1 second =====\n");
+            int threadCount = 120;
+            long duration = 24 * 60 * 60 * 1000; // 24 hours
+            long endTime = System.currentTimeMillis() + duration;
+            ExecutorService executor = Executors.newFixedThreadPool(threadCount);
+            AtomicInteger totalExecutions = new AtomicInteger(0);
+            AtomicInteger errorCount = new AtomicInteger(0);
             
-            long startTime = System.currentTimeMillis();
-            long duration = 24 * 60 * 60 * 1000; // 24 hours in milliseconds
-            long endTime = startTime + duration;
-            int executionCount = 0;
-            
-            log("Start time: " + dateFormat.format(new Date(startTime)));
+            log("Start time: " + dateFormat.format(new Date()));
             log("End time (estimated): " + dateFormat.format(new Date(endTime)));
-            log("Press Ctrl+C to stop anytime\n");
+            log("Launching " + threadCount + " threads...\n");
             
-            while (System.currentTimeMillis() < endTime) {
-                executionCount++;
-                log("\n########## Execution #" + executionCount + " ##########");
-                executeLongQuery(sql);
-                
-                // Wait 1 second before next execution
-                long remaining = endTime - System.currentTimeMillis();
-                if (remaining > 0) {
-                    long sleepTime = Math.min(1000, remaining);
-                    log("\nWaiting 1 second before next execution...");
-                    Thread.sleep(sleepTime);
-                }
+            // 每个线程获取一个连接并持续复用
+            for (int i = 0; i < threadCount; i++) {
+                final int threadId = i + 1;
+                executor.submit(() -> {
+                    DruidPooledConnection conn = null;
+                    Statement stmt = null;
+                    
+                    try {
+                        // 获取连接（只获取一次）
+                        log("[Thread-" + threadId + "] Acquiring connection...");
+                        conn = dataSource.getConnection();
+                        log("[Thread-" + threadId + "] Got connection: " + conn.toString());
+                        
+                        stmt = conn.createStatement();
+                        int execCount = 0;
+                        
+                        // 持续使用这个连接执行查询
+                        while (System.currentTimeMillis() < endTime) {
+                            execCount++;
+                            totalExecutions.incrementAndGet();
+                            
+                            try {
+                                log("[Thread-" + threadId + "] Execution #" + execCount + " - Executing SQL...");
+                                ResultSet rs = stmt.executeQuery(sql);
+                                
+                                if (rs.next()) {
+                                    log("[Thread-" + threadId + "] Execution #" + execCount + " - Completed: " + rs.getString(2));
+                                }
+                                rs.close();
+                                
+                            } catch (SQLException e) {
+                                errorCount.incrementAndGet();
+                                log("[Thread-" + threadId + "] SQL ERROR at execution #" + execCount + ": " + e.getMessage());
+                                if (isConnectionError(e)) {
+                                    log("[Thread-" + threadId + "] *** Connection error detected, exiting thread ***");
+                                    break;
+                                }
+                            }
+                            
+                            // 每次执行间隔1秒
+                            Thread.sleep(1000);
+                        }
+                        
+                        log("[Thread-" + threadId + "] Finished. Total executions: " + execCount);
+                        
+                    } catch (Exception e) {
+                        errorCount.incrementAndGet();
+                        log("[Thread-" + threadId + "] FATAL ERROR: " + e.getMessage());
+                        e.printStackTrace();
+                    } finally {
+                        // 最后才关闭连接
+                        try {
+                            if (stmt != null) stmt.close();
+                            if (conn != null) conn.close();
+                            log("[Thread-" + threadId + "] Connection released");
+                        } catch (SQLException e) {
+                            log("[Thread-" + threadId + "] Error closing resources: " + e.getMessage());
+                        }
+                    }
+                });
             }
             
-            log("\n========== Loop Execution Completed ==========");
-            log("Total executions: " + executionCount);
-            log("Total duration: " + (System.currentTimeMillis() - startTime) / 1000.0 / 3600.0 + " hours");
+            // 监控连接池状态，每5秒打印一次
+            Thread monitorThread = new Thread(() -> {
+                try {
+                    while (!executor.isTerminated()) {
+                        Thread.sleep(5000);
+                        printPoolStatus();
+                        log("Progress: Total Executions=" + totalExecutions.get() + 
+                            ", Errors=" + errorCount.get());
+                    }
+                } catch (InterruptedException e) {
+                    // Monitor thread interrupted
+                }
+            });
+            monitorThread.setDaemon(true);
+            monitorThread.start();
+            
+            // 等待所有线程完成（24小时）
+            executor.shutdown();
+            executor.awaitTermination(25, TimeUnit.HOURS);
+            
+            log("\n========== Test Completed ==========");
+            log("End time: " + dateFormat.format(new Date()));
+            log("Total threads: " + threadCount);
+            log("Total executions: " + totalExecutions.get());
+            log("Total errors: " + errorCount.get());
             
             printPoolStatus();
             
