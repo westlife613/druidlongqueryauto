@@ -115,7 +115,7 @@ public class DruidLongQueryExample {
         
         // 连接泄漏检测
         dataSource.setRemoveAbandoned(true);
-        dataSource.setRemoveAbandonedTimeout(3600);      // 1小时
+        dataSource.setRemoveAbandonedTimeout(86400);     // 24小时（支持长时间持有连接测试）
         dataSource.setLogAbandoned(true);
         
         try {
@@ -441,7 +441,6 @@ public class DruidLongQueryExample {
                 }
                 executor.submit(() -> {
                     DruidPooledConnection conn = null;
-                    Statement stmt = null;
                     
                     try {
                         // 获取连接（只获取一次）
@@ -449,7 +448,6 @@ public class DruidLongQueryExample {
                         conn = dataSource.getConnection();
                         log("[Thread-" + threadId + "] Got connection: " + conn.toString());
                         
-                        stmt = conn.createStatement();
                         int execCount = 0;
                         
                         // 持续使用这个连接执行查询
@@ -457,14 +455,19 @@ public class DruidLongQueryExample {
                             execCount++;
                             totalExecutions.incrementAndGet();
                             
+                            Statement stmt = null;
+                            ResultSet rs = null;
+                            
                             try {
+                                // 每次查询都创建新 Statement
+                                stmt = conn.createStatement();
+                                
                                 log("[Thread-" + threadId + "] Execution #" + execCount + " - Executing SQL...");
-                                ResultSet rs = stmt.executeQuery(sql);
+                                rs = stmt.executeQuery(sql);
                                 
                                 if (rs.next()) {
                                     log("[Thread-" + threadId + "] Execution #" + execCount + " - Completed: " + rs.getString(2));
                                 }
-                                rs.close();
                                 
                             } catch (SQLException e) {
                                 errorCount.incrementAndGet();
@@ -472,6 +475,14 @@ public class DruidLongQueryExample {
                                 if (isConnectionError(e)) {
                                     log("[Thread-" + threadId + "] *** Connection error detected, exiting thread ***");
                                     break;
+                                }
+                            } finally {
+                                // 每次查询后都关闭 ResultSet 和 Statement
+                                try {
+                                    if (rs != null) rs.close();
+                                    if (stmt != null) stmt.close();
+                                } catch (SQLException e) {
+                                    // 忽略关闭时的异常
                                 }
                             }
                             
@@ -488,7 +499,6 @@ public class DruidLongQueryExample {
                     } finally {
                         // 最后才关闭连接
                         try {
-                            if (stmt != null) stmt.close();
                             if (conn != null) conn.close();
                             log("[Thread-" + threadId + "] Connection released");
                         } catch (SQLException e) {
