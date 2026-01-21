@@ -411,25 +411,37 @@ public class DruidLongQueryExample {
             // }
             
             // 3. Configure test SQL (modify to your actual table and query)
-            String sql = "select SLEEP(15), count(distinct a.mt4_account) from tb_account_mt4 a join tb_user on a.user_id = tb_user.id and tb_user.is_del = 0 join tb_user_relation ur_parent on a.user_id = ur_parent.user_id and ur_parent.is_del = 0 join tb_user_account_mt4_relation on a.mt4_account = tb_user_account_mt4_relation.mt4_account and tb_user_account_mt4_relation.is_del = 0 join tb_user ua_parent on tb_user_account_mt4_relation.p_id = ua_parent.id left join tb_user_extends on a.user_id = tb_user_extends.user_id join tb_user_outer on a.user_id = tb_user_outer.user_id where a.is_del = 0 and a.mt4_account is not null and ur_parent.org_id in (1,100,101,103,121,286,105,119,287,288,154,156,155,219,220,221,226,164,368,169,170,176,177,215,289,172,184,290,185,173,228,239,264,355,357,358,367,374,379,381,387,388,389,241,337,346,377,378,338,339,340,342,350,351,380,385,386,123,136,187,364,137,138,160,188,168,190,200,201,277,278,269,270,275,276,375,285,124,125,126,128,189,191,192,196,197,222,371,372,223,227,291,292,365,274,352,363,370,373,376,393,353,356,359,360,361,362,382,390,391,366,383,384,392,127,133,134,135,139,140,141,159,161,354,165,166,167,193) and (a.is_archive = 0 or a.is_archive is null) and a.accountDealType = 3 and a.approved_time >= '2015-01-01 00:00:00' and a.approved_time <= '2026-01-19 15:00:08'";
+            String sql = "select count(distinct a.mt4_account) from tb_account_mt4 a join tb_user on a.user_id = tb_user.id and tb_user.is_del = 0 join tb_user_relation ur_parent on a.user_id = ur_parent.user_id and ur_parent.is_del = 0 join tb_user_account_mt4_relation on a.mt4_account = tb_user_account_mt4_relation.mt4_account and tb_user_account_mt4_relation.is_del = 0 join tb_user ua_parent on tb_user_account_mt4_relation.p_id = ua_parent.id left join tb_user_extends on a.user_id = tb_user_extends.user_id join tb_user_outer on a.user_id = tb_user_outer.user_id where a.is_del = 0 and a.mt4_account is not null and ur_parent.org_id in (1,100,101,103,121,286,105,119,287,288,154,156,155,219,220,221,226,164,368,169,170,176,177,215,289,172,184,290,185,173,228,239,264,355,357,358,367,374,379,381,387,388,389,241,337,346,377,378,338,339,340,342,350,351,380,385,386,123,136,187,364,137,138,160,188,168,190,200,201,277,278,269,270,275,276,375,285,124,125,126,128,189,191,192,196,197,222,371,372,223,227,291,292,365,274,352,363,370,373,376,393,353,356,359,360,361,362,382,390,391,366,383,384,392,127,133,134,135,139,140,141,159,161,354,165,166,167,193) and (a.is_archive = 0 or a.is_archive is null) and a.accountDealType = 3 and a.approved_time >= '2015-01-01 00:00:00' and a.approved_time <= '2026-01-19 15:00:08'";
             
             log("Test SQL: " + sql);
-            log("\n===== Disconnection Test Scenarios =====\n");
+            log("\n===== Loop Execution Mode: Run for 24 hours, execute every 15 seconds =====\n");
             
-            // ===== Scenario 1: Basic Query =====
-            log("▶ Scenario 1: Basic Query (Baseline Test)");
-            executeLongQuery(sql);
-            Thread.sleep(2000);
+            long startTime = System.currentTimeMillis();
+            long duration = 24 * 60 * 60 * 1000; // 24 hours in milliseconds
+            long endTime = startTime + duration;
+            int executionCount = 0;
             
-            // ===== Scenario 2: Idle Wait Test  =====
-            log("\n\n▶ Scenario 2: Wait 30s idle then re-query (Test connection idle timeout)");
-            testLongQueryWithIdle(sql, 30);
+            log("Start time: " + dateFormat.format(new Date(startTime)));
+            log("End time (estimated): " + dateFormat.format(new Date(endTime)));
+            log("Press Ctrl+C to stop anytime\n");
             
-            log("\n========== All Tests Completed ==========");
+            while (System.currentTimeMillis() < endTime) {
+                executionCount++;
+                log("\n########## Execution #" + executionCount + " ##########");
+                executeLongQuery(sql);
+                
+                // Wait 15 seconds before next execution
+                long remaining = endTime - System.currentTimeMillis();
+                if (remaining > 0) {
+                    long sleepTime = Math.min(15000, remaining);
+                    log("\nWaiting 15 seconds before next execution...");
+                    Thread.sleep(sleepTime);
+                }
+            }
             
-            // ===== Summary =====
-            log("\n========================================");
-            log("  All disconnection test scenarios completed");
+            log("\n========== Loop Execution Completed ==========");
+            log("Total executions: " + executionCount);
+            log("Total duration: " + (System.currentTimeMillis() - startTime) / 1000.0 / 3600.0 + " hours");
             
             printPoolStatus();
             
