@@ -428,11 +428,17 @@ public class DruidLongQueryExample {
             
             log("Start time: " + dateFormat.format(new Date()));
             log("End time (estimated): " + dateFormat.format(new Date(endTime)));
-            log("Launching " + threadCount + " threads...\n");
+            log("Launching " + threadCount + " threads with staggered start (100ms interval)...\n");
             
             // 每个线程获取一个连接并持续复用
             for (int i = 0; i < threadCount; i++) {
                 final int threadId = i + 1;
+                
+                // 每隔100ms启动一个线程，避免同时争抢连接
+                if (i > 0 && i % 10 == 0) {
+                    Thread.sleep(100);
+                    log("Launched " + i + " threads...");
+                }
                 executor.submit(() -> {
                     DruidPooledConnection conn = null;
                     Statement stmt = null;
