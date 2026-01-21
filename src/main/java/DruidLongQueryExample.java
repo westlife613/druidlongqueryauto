@@ -161,14 +161,38 @@ public class DruidLongQueryExample {
             long startTime = System.currentTimeMillis();
             rs = stmt.executeQuery(sql);
             
+            // 获取列信息
+            int columnCount = rs.getMetaData().getColumnCount();
+            log("\n========== Query Results ==========");
+            log("Column count: " + columnCount);
+            
+            // 打印列名
+            StringBuilder header = new StringBuilder();
+            for (int i = 1; i <= columnCount; i++) {
+                header.append(rs.getMetaData().getColumnName(i));
+                if (i < columnCount) header.append(" | ");
+            }
+            log(header.toString());
+            log("--------------------------------------------------");
+            
             // 处理结果集
             int count = 0;
             while (rs.next()) {
                 count++;
                 
+                // 打印前10条和后10条记录
+                if (count <= 10 || count % 1000 == 0) {
+                    StringBuilder row = new StringBuilder();
+                    for (int i = 1; i <= columnCount; i++) {
+                        row.append(rs.getString(i));
+                        if (i < columnCount) row.append(" | ");
+                    }
+                    log("Row " + count + ": " + row.toString());
+                }
+                
                 // Print progress and connection status every 1000 records
                 if (count % 1000 == 0) {
-                    log("Processed " + count + " records, connection status: " + (conn.isClosed() ? "Closed" : "Active"));
+                    log("Progress: " + count + " records, connection status: " + (conn.isClosed() ? "Closed" : "Active"));
                 }
             }
             
