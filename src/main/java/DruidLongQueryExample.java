@@ -78,7 +78,7 @@ public class DruidLongQueryExample {
         dataSource.setMaxWait(30000);                     // 获取连接最大等待时间(毫秒)
         
         // ===== AWS生产环境配置（与现有Druid配置保持一致）=====
-        dataSource.setKeepAlive(true);                    // 开启keepAlive保持连接
+        dataSource.setKeepAlive(false);                    // 开启keepAlive保持连接
         dataSource.setKeepAliveBetweenTimeMillis(35000); // 保活间隔35秒
         dataSource.setTestWhileIdle(true);               // 开启空闲连接检测
         dataSource.setTestOnBorrow(false);                // 获取连接时检测
