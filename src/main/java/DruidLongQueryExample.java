@@ -91,13 +91,13 @@ public class DruidLongQueryExample {
         dataSource.setMinEvictableIdleTimeMillis(60000);      // 最小空闲1分钟可回收
         dataSource.setMaxEvictableIdleTimeMillis(80000);      // 最大空闲80秒必须回收
         
-        // 超时配置（测试环境使用较长超时时间）
+        // 超时配置（支持长时间查询测试）
         // AWS生产环境: connectTimeout=90s, socketTimeout=90s
         dataSource.setConnectionProperties(
             "druid.stat.mergeSql=true;" +
             "druid.stat.slowSqlMillis=5000;" +
-            "connectTimeout=90000;" +                     // 连接超时90秒（测试用）
-            "socketTimeout=90000;" +                     // Socket超时90秒（支持长查询测试）
+            "connectTimeout=90000;" +                     // 连接超时90秒
+            "socketTimeout=0;" +                          // Socket超时设置为0（无超时，支持SLEEP(660)长查询）
             "useSSL=false;" +                             // 本地测试不使用SSL
             "requireSSL=false"                            // 不强制SSL
         );
