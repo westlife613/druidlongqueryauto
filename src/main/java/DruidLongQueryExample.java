@@ -72,10 +72,10 @@ public class DruidLongQueryExample {
         }
         
        
-        dataSource.setInitialSize(5);                    // 初始化连接数
-        dataSource.setMinIdle(5);                        // 最小空闲连接数
-        dataSource.setMaxActive(10);                     // 最大活跃连接数（与AWS生产环境一致）
-        dataSource.setMaxWait(30000);                     // 获取连接最大等待时间(毫秒)
+        dataSource.setInitialSize(3);                    // 初始化连接数
+        dataSource.setMinIdle(3);                        // 最小空闲连接数
+        dataSource.setMaxActive(3);                       // 最大活跃连接数（测试用小连接池）
+        dataSource.setMaxWait(120000);                    // 获取连接最大等待时间(毫秒) - 2分钟
         
         // ===== AWS生产环境配置（与现有Druid配置保持一致）=====
         dataSource.setKeepAlive(true);                    // 开启keepAlive保持连接
@@ -97,7 +97,7 @@ public class DruidLongQueryExample {
             "druid.stat.mergeSql=true;" +
             "druid.stat.slowSqlMillis=5000;" +
             "connectTimeout=90000;" +                     // 连接超时90秒
-            "socketTimeout=90000;" +                          // Socket超时设置为0（无超时，支持SLEEP(660)长查询）
+            "socketTimeout=0;" +                          // Socket超时设置为0（无超时，支持SLEEP(660)长查询）
             "useSSL=false;" +                             // 本地测试不使用SSL
             "requireSSL=false"                            // 不强制SSL
         );
@@ -420,36 +420,71 @@ public class DruidLongQueryExample {
             // }
             
             // 3. Configure test SQL (modify to your actual table and query)
-            String sql = "select sleep(30), count(distinct a.mt4_account) from tb_account_mt4 a join tb_user on a.user_id = tb_user.id and tb_user.is_del = 0 join tb_user_relation ur_parent on a.user_id = ur_parent.user_id and ur_parent.is_del = 0 join tb_user_account_mt4_relation on a.mt4_account = tb_user_account_mt4_relation.mt4_account and tb_user_account_mt4_relation.is_del = 0 join tb_user ua_parent on tb_user_account_mt4_relation.p_id = ua_parent.id left join tb_user_extends on a.user_id = tb_user_extends.user_id join tb_user_outer on a.user_id = tb_user_outer.user_id where a.is_del = 0 and a.mt4_account is not null and ur_parent.org_id in (1,100,101,103,121,286,105,119,287,288,154,156,155,219,220,221,226,164,368,169,170,176,177,215,289,172,184,290,185,173,228,239,264,355,357,358,367,374,379,381,387,388,389,241,337,346,377,378,338,339,340,342,350,351,380,385,386,123,136,187,364,137,138,160,188,168,190,200,201,277,278,269,270,275,276,375,285,124,125,126,128,189,191,192,196,197,222,371,372,223,227,291,292,365,274,352,363,370,373,376,393,353,356,359,360,361,362,382,390,391,366,383,384,392,127,133,134,135,139,140,141,159,161,354,165,166,167,193) and (a.is_archive = 0 or a.is_archive is null) and a.accountDealType = 3 and a.approved_time >= '2015-01-01 00:00:00' and a.approved_time <= '2026-01-19 15:00:08'";
+            final String sql = "select sleep(30), count(distinct a.mt4_account) from tb_account_mt4 a join tb_user on a.user_id = tb_user.id and tb_user.is_del = 0 join tb_user_relation ur_parent on a.user_id = ur_parent.user_id and ur_parent.is_del = 0 join tb_user_account_mt4_relation on a.mt4_account = tb_user_account_mt4_relation.mt4_account and tb_user_account_mt4_relation.is_del = 0 join tb_user ua_parent on tb_user_account_mt4_relation.p_id = ua_parent.id left join tb_user_extends on a.user_id = tb_user_extends.user_id join tb_user_outer on a.user_id = tb_user_outer.user_id where a.is_del = 0 and a.mt4_account is not null and ur_parent.org_id in (1,100,101,103,121,286,105,119,287,288,154,156,155,219,220,221,226,164,368,169,170,176,177,215,289,172,184,290,185,173,228,239,264,355,357,358,367,374,379,381,387,388,389,241,337,346,377,378,338,339,340,342,350,351,380,385,386,123,136,187,364,137,138,160,188,168,190,200,201,277,278,269,270,275,276,375,285,124,125,126,128,189,191,192,196,197,222,371,372,223,227,291,292,365,274,352,363,370,373,376,393,353,356,359,360,361,362,382,390,391,366,383,384,392,127,133,134,135,139,140,141,159,161,354,165,166,167,193) and (a.is_archive = 0 or a.is_archive is null) and a.accountDealType = 3 and a.approved_time >= '2015-01-01 00:00:00' and a.approved_time <= '2026-01-19 15:00:08'";
             
             log("Test SQL: " + sql);
-            log("\n===== Loop Execution Mode: Run for 24 hours, execute every 1 second =====\n");
+            log("\n===== Multi-thread Mode: 5 threads, each executes continuously for 24 hours =====\n");
+            log("MaxActive=3, so 3 threads will get connections, 2 threads will wait\n");
             
-            long startTime = System.currentTimeMillis();
-            long duration = 24 * 60 * 60 * 1000; // 24 hours in milliseconds
-            long endTime = startTime + duration;
-            int executionCount = 0;
+            final long startTime = System.currentTimeMillis();
+            final long duration = 24 * 60 * 60 * 1000; // 24 hours in milliseconds
             
             log("Start time: " + dateFormat.format(new Date(startTime)));
-            log("End time (estimated): " + dateFormat.format(new Date(endTime)));
+            log("End time (estimated): " + dateFormat.format(new Date(startTime + duration)));
             log("Press Ctrl+C to stop anytime\n");
             
-            while (System.currentTimeMillis() < endTime) {
-                executionCount++;
-                log("\n########## Execution #" + executionCount + " ##########");
-                executeLongQuery(sql);
+            // Create 5 threads
+            Thread[] threads = new Thread[5];
+            for (int i = 0; i < 5; i++) {
+                final int threadId = i + 1;
+                threads[i] = new Thread(() -> {
+                    int executionCount = 0;
+                    log("[Thread-" + threadId + "] Started");
+                    
+                    while (System.currentTimeMillis() < startTime + duration) {
+                        executionCount++;
+                        log("\n[Thread-" + threadId + "] ########## Execution #" + executionCount + " ##########");
+                        executeLongQuery(sql);
+                        
+                        // Wait 1 second before next execution
+                        long remaining = (startTime + duration) - System.currentTimeMillis();
+                        if (remaining > 0) {
+                            try {
+                                long sleepTime = Math.min(1000, remaining);
+                                log("[Thread-" + threadId + "] Waiting 1 second before next execution...");
+                                Thread.sleep(sleepTime);
+                            } catch (InterruptedException e) {
+                                log("[Thread-" + threadId + "] Interrupted");
+                                break;
+                            }
+                        }
+                    }
+                    
+                    log("[Thread-" + threadId + "] Completed. Total executions: " + executionCount);
+                }, "QueryThread-" + (i + 1));
                 
-                // Wait 1 second before next execution
-                long remaining = endTime - System.currentTimeMillis();
-                if (remaining > 0) {
-                    long sleepTime = Math.min(1000, remaining);
-                    log("\nWaiting 1 second before next execution...");
-                    Thread.sleep(sleepTime);
+                threads[i].start();
+                log("Thread-" + threadId + " started");
+                
+                // Stagger thread start by 500ms to observe connection acquisition
+                try {
+                    Thread.sleep(500);
+                } catch (InterruptedException e) {
+                    e.printStackTrace();
                 }
             }
             
-            log("\n========== Loop Execution Completed ==========");
-            log("Total executions: " + executionCount);
+            // Wait for all threads to complete
+            log("\nAll threads started, waiting for completion...");
+            for (int i = 0; i < 5; i++) {
+                try {
+                    threads[i].join();
+                } catch (InterruptedException e) {
+                    e.printStackTrace();
+                }
+            }
+            
+            log("\n========== All Threads Completed ==========");
             log("Total duration: " + (System.currentTimeMillis() - startTime) / 1000.0 / 3600.0 + " hours");
             
             printPoolStatus();
