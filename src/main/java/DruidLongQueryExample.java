@@ -86,10 +86,10 @@ public class DruidLongQueryExample {
         dataSource.setValidationQuery("SELECT 1");       // 验证查询语句
         dataSource.setValidationQueryTimeout(5);         // 验证查询超时时间(秒)
         
-        // 连接回收配置（与AWS环境一致）
-        dataSource.setTimeBetweenEvictionRunsMillis(5000);    // 5秒检测一次（AWS配置）
-        dataSource.setMinEvictableIdleTimeMillis(60000);      // 最小空闲1分钟可回收
-        dataSource.setMaxEvictableIdleTimeMillis(80000);      // 最大空闲80秒必须回收
+        // 连接回收配置（关闭自动回收以测试wait_timeout）
+        dataSource.setTimeBetweenEvictionRunsMillis(0);       // 关闭回收检测线程
+        dataSource.setMinEvictableIdleTimeMillis(-1);         // 禁用最小空闲时间回收
+        dataSource.setMaxEvictableIdleTimeMillis(-1);         // 禁用最大空闲时间回收
         
         // 超时配置（支持长时间查询测试）
         // AWS生产环境: connectTimeout=90s, socketTimeout=90s
