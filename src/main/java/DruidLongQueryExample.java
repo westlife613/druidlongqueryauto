@@ -97,7 +97,7 @@ public class DruidLongQueryExample {
             "druid.stat.mergeSql=true;" +
             "druid.stat.slowSqlMillis=5000;" +
             "connectTimeout=90000;" +                     // 连接超时90秒
-            "socketTimeout=0;" +                          // Socket超时设置为0（无超时，支持SLEEP(660)长查询）
+            "socketTimeout=90000;" +                          // Socket超时设置为0（无超时，支持SLEEP(660)长查询）
             "useSSL=false;" +                             // 本地测试不使用SSL
             "requireSSL=false"                            // 不强制SSL
         );
