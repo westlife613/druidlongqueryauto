@@ -78,7 +78,7 @@ public class DruidLongQueryExample {
         dataSource.setMaxWait(120000);                    // 获取连接最大等待时间(毫秒) - 2分钟
         
         // ===== AWS生产环境配置（与现有Druid配置保持一致）=====
-        dataSource.setKeepAlive(true);                    // 开启keepAlive保持连接
+        dataSource.setKeepAlive(false);                   // 关闭keepAlive以测试wait_timeout断连
         dataSource.setKeepAliveBetweenTimeMillis(35000); // 保活间隔35秒
         dataSource.setTestWhileIdle(true);               // 开启空闲连接检测
         dataSource.setTestOnBorrow(false);                // 获取连接时检测
@@ -420,14 +420,17 @@ public class DruidLongQueryExample {
             // }
             
             // 3. Configure test SQL (modify to your actual table and query)
-            final String sql = "select sleep(30), count(distinct a.mt4_account) from tb_account_mt4 a join tb_user on a.user_id = tb_user.id and tb_user.is_del = 0 join tb_user_relation ur_parent on a.user_id = ur_parent.user_id and ur_parent.is_del = 0 join tb_user_account_mt4_relation on a.mt4_account = tb_user_account_mt4_relation.mt4_account and tb_user_account_mt4_relation.is_del = 0 join tb_user ua_parent on tb_user_account_mt4_relation.p_id = ua_parent.id left join tb_user_extends on a.user_id = tb_user_extends.user_id join tb_user_outer on a.user_id = tb_user_outer.user_id where a.is_del = 0 and a.mt4_account is not null and ur_parent.org_id in (1,100,101,103,121,286,105,119,287,288,154,156,155,219,220,221,226,164,368,169,170,176,177,215,289,172,184,290,185,173,228,239,264,355,357,358,367,374,379,381,387,388,389,241,337,346,377,378,338,339,340,342,350,351,380,385,386,123,136,187,364,137,138,160,188,168,190,200,201,277,278,269,270,275,276,375,285,124,125,126,128,189,191,192,196,197,222,371,372,223,227,291,292,365,274,352,363,370,373,376,393,353,356,359,360,361,362,382,390,391,366,383,384,392,127,133,134,135,139,140,141,159,161,354,165,166,167,193) and (a.is_archive = 0 or a.is_archive is null) and a.accountDealType = 3 and a.approved_time >= '2015-01-01 00:00:00' and a.approved_time <= '2026-01-19 15:00:08'";
+            final String sql = "SELECT 1 as test_column";
             
             log("Test SQL: " + sql);
-            log("\n===== Multi-thread Mode: 5 threads, each executes continuously for 24 hours =====\n");
-            log("MaxActive=3, so 3 threads will get connections, 2 threads will wait\n");
+            log("\n===== Communication Link Failure Test =====\n");
+            log("Pattern: Query → Idle 12 minutes → Query again (should fail)\n");
+            log("KeepAlive: disabled, wait_timeout should disconnect idle connections\n");
+            log("Please ensure MySQL wait_timeout is set to 600 seconds (10 minutes)\n");
             
             final long startTime = System.currentTimeMillis();
             final long duration = 24 * 60 * 60 * 1000; // 24 hours in milliseconds
+            final int idleSeconds = 12 * 60; // 12 minutes idle time
             
             log("Start time: " + dateFormat.format(new Date(startTime)));
             log("End time (estimated): " + dateFormat.format(new Date(startTime + duration)));
@@ -438,37 +441,63 @@ public class DruidLongQueryExample {
             for (int i = 0; i < 5; i++) {
                 final int threadId = i + 1;
                 threads[i] = new Thread(() -> {
-                    int executionCount = 0;
+                    int cycleCount = 0;
                     log("[Thread-" + threadId + "] Started");
                     
                     while (System.currentTimeMillis() < startTime + duration) {
-                        executionCount++;
-                        log("\n[Thread-" + threadId + "] ########## Execution #" + executionCount + " ##########");
+                        cycleCount++;
+                        log("\n[Thread-" + threadId + "] ########## Cycle #" + cycleCount + " ##########");
+                        
+                        // First query
+                        log("[Thread-" + threadId + "] === First Query ===");
                         executeLongQuery(sql);
                         
-                        // Wait 1 second before next execution
-                        long remaining = (startTime + duration) - System.currentTimeMillis();
-                        if (remaining > 0) {
-                            try {
-                                long sleepTime = Math.min(1000, remaining);
-                                log("[Thread-" + threadId + "] Waiting 1 second before next execution...");
-                                Thread.sleep(sleepTime);
-                            } catch (InterruptedException e) {
-                                log("[Thread-" + threadId + "] Interrupted");
-                                break;
+                        // Idle for 12 minutes (720 seconds)
+                        log("[Thread-" + threadId + "] === Idling for " + idleSeconds + " seconds (" + (idleSeconds/60) + " minutes) ===");
+                        log("[Thread-" + threadId + "] Idle start: " + dateFormat.format(new Date()));
+                        
+                        try {
+                            for (int sec = 0; sec < idleSeconds; sec++) {
+                                Thread.sleep(1000);
+                                // Print progress every minute
+                                if ((sec + 1) % 60 == 0) {
+                                    log("[Thread-" + threadId + "] Idle progress: " + (sec + 1) / 60 + "/" + (idleSeconds / 60) + " minutes");
+                                    printPoolStatus();
+                                }
+                                
+                                // Check if test duration exceeded
+                                if (System.currentTimeMillis() >= startTime + duration) {
+                                    break;
+                                }
                             }
+                        } catch (InterruptedException e) {
+                            log("[Thread-" + threadId + "] Idle interrupted");
+                            break;
                         }
+                        
+                        log("[Thread-" + threadId + "] Idle end: " + dateFormat.format(new Date()));
+                        
+                        // Check if test duration exceeded
+                        if (System.currentTimeMillis() >= startTime + duration) {
+                            break;
+                        }
+                        
+                        // Second query - should trigger Communication link failure
+                        log("[Thread-" + threadId + "] === Second Query (Testing for disconnect) ===");
+                        executeLongQuery(sql);
+                        
+                        log("[Thread-" + threadId + "] Cycle #" + cycleCount + " completed\n");
                     }
                     
-                    log("[Thread-" + threadId + "] Completed. Total executions: " + executionCount);
+                    log("[Thread-" + threadId + "] Completed. Total cycles: " + cycleCount);
                 }, "QueryThread-" + (i + 1));
                 
                 threads[i].start();
                 log("Thread-" + threadId + " started");
                 
-                // Stagger thread start by 500ms to observe connection acquisition
+                // Stagger thread start by 2 seconds to observe behavior
                 try {
-                    Thread.sleep(500);
+                    Thread.sleep(2000);
                 } catch (InterruptedException e) {
                     e.printStackTrace();
                 }
