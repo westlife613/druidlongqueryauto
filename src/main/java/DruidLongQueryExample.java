@@ -269,6 +269,134 @@ public class DruidLongQueryExample {
     }
     
     /**
+     * 模拟检测时间窗口漏洞：
+     * 连接被MySQL断开，但恰好在Druid两次检测之间被应用获取使用
+     * 
+     * 适用于wait_timeout=600秒（10分钟）的环境
+     */
+    public static void testDetectionWindowVulnerability(String sql) {
+        log("\n########## Detection Window Vulnerability Test ##########");
+        log("Scenario: Connection killed by MySQL between Druid's detection cycles");
+        log("timeBetweenEvictionRunsMillis: " + dataSource.getTimeBetweenEvictionRunsMillis() + "ms (检测间隔)");
+        log("Database wait_timeout: 600 seconds (10 minutes)");
+        log("Test strategy: Wait 610s (just over wait_timeout), then acquire connection immediately\n");
+        
+        DruidPooledConnection conn = null;
+        
+        try {
+            // Step 1: 获取连接并使用
+            log("Step 1: Acquiring connection and executing query...");
+            conn = dataSource.getConnection();
+            Statement stmt = conn.createStatement();
+            ResultSet rs = stmt.executeQuery(sql);
+            if (rs.next()) {
+                log("✓ First query successful, result: " + rs.getString(1));
+            }
+            rs.close();
+            stmt.close();
+            
+            log("Connection object: " + conn.toString());
+            printPoolStatus();
+            
+            // Step 2: 归还连接到池中（开始空闲）
+            log("\nStep 2: Returning connection to pool (starts idling)...");
+            conn.close();  // 归还到池中，不是真正关闭
+            log("✓ Connection returned to pool, now idle");
+            log("Return time: " + dateFormat.format(new Date()));
+            printPoolStatus();
+            
+            // Step 3: 等待610秒，刚好超过wait_timeout(600s)
+            int waitTime = 610;  // 610秒 = 10分10秒
+            log("\nStep 3: Waiting " + waitTime + " seconds (" + (waitTime/60) + " min " + (waitTime%60) + " sec)...");
+            log("Expected timeline:");
+            log("  T=0s:   Connection returned to pool");
+            log("  T=600s: MySQL kills connection due to wait_timeout");
+            log("  T=605s: Druid might detect in next testWhileIdle cycle (every 5s)");
+            log("  T=610s: We acquire connection - racing with Druid detection!");
+            log("\nDruid testWhileIdle runs every " + (dataSource.getTimeBetweenEvictionRunsMillis()/1000) + "s");
+            log("If we get dead connection → Communication link failure!\n");
+            
+            for (int i = 1; i <= waitTime; i++) {
+                Thread.sleep(1000);
+                if (i % 60 == 0) {  // 每分钟打印一次
+                    log("  [" + (i/60) + " min] Idle time: " + i + "s / " + waitTime + "s");
+                    printPoolStatus();
+                } else if (i >= 595 && i <= 610) {  // 关键时刻每秒打印
+                    log("  [" + i + "s] Critical moment approaching...");
+                    if (i % 5 == 0) {
+                        printPoolStatus();
+                    }
+                }
+            }
+            
+            log("\nWait completed: " + dateFormat.format(new Date()));
+            log("Expected state: Connection physically closed by MySQL at 600s");
+            log("                Might still be in Druid pool if detection missed it");
+            
+            // Step 4: 立即尝试获取连接（可能取到死连接）
+            log("\nStep 4: Attempting to acquire connection NOW (racing with Druid detection)...");
+            log("*** Critical moment: testOnBorrow=false, no validation on borrow ***");
+            printPoolStatus();
+            
+            long beforeGetConn = System.currentTimeMillis();
+            conn = dataSource.getConnection();
+            long afterGetConn = System.currentTimeMillis();
+            
+            log("✓ Connection acquired, time taken: " + (afterGetConn - beforeGetConn) + "ms");
+            log("Connection object: " + conn.toString());
+            
+            // Step 5: 尝试使用连接（这里应该报错）
+            log("\nStep 5: Attempting to use connection (expecting Communication link failure)...");
+            Statement stmt2 = conn.createStatement();
+            ResultSet rs2 = stmt2.executeQuery(sql);
+            
+            if (rs2.next()) {
+                log("✗ Test did not reproduce the issue - Query succeeded!");
+                log("Result: " + rs2.getString(1));
+                log("\nPossible reasons:");
+                log("  1. keepAlive prevented disconnection (should be disabled)");
+                log("  2. Druid's testWhileIdle detected and replaced the connection before we got it");
+                log("  3. Need to retry - timing is critical");
+                log("\nSuggestion: Run test multiple times to hit the timing window");
+            }
+            
+            rs2.close();
+            stmt2.close();
+            conn.close();
+            
+        } catch (SQLException e) {
+            log("\n*** SQLException caught! ***");
+            log("Exception type: " + e.getClass().getName());
+            log("Error code: " + e.getErrorCode());
+            log("SQL state: " + e.getSQLState());
+            log("Error message: " + e.getMessage());
+            
+            if (isConnectionError(e)) {
+                log("\n✓✓✓ SUCCESS: Communication link failure reproduced! ✓✓✓");
+                log("Root cause confirmed:");
+                log("  - MySQL killed connection at wait_timeout (600s)");
+                log("  - Druid's testOnBorrow=false didn't validate connection on borrow");
+                log("  - Application got dead connection from pool");
+                log("\nProduction fix: Enable testOnBorrow=true to validate before use");
+            }
+            
+            e.printStackTrace();
+        } catch (InterruptedException e) {
+            log("Test interrupted: " + e.getMessage());
+        } finally {
+            if (conn != null) {
+                try {
+                    conn.close();
+                } catch (SQLException e) {
+                    // ignore
+                }
+            }
+        }
+        
+        log("\n########## Detection Window Test Completed ##########\n");
+    }
+    
+    /**
      * 判断是否为连接断开错误
      */
     private static boolean isConnectionError(SQLException e) {
@@ -423,7 +551,38 @@ public class DruidLongQueryExample {
             final String sql = "SELECT 1 as test_column";
             
             log("Test SQL: " + sql);
-            log("\n===== Communication Link Failure Test =====\n");
+            
+            // 选择测试模式
+            String testMode = System.getenv("TEST_MODE") != null 
+                ? System.getenv("TEST_MODE") 
+                : "window";  // 默认使用时间窗口测试
+            
+            log("\n===== Test Mode: " + testMode + " =====\n");
+            
+            if ("window".equalsIgnoreCase(testMode)) {
+                // 时间窗口漏洞测试（适用于wait_timeout=10分钟）
+                log("Mode: Detection Window Vulnerability Test");
+                log("Database wait_timeout: 600 seconds (10 minutes)");
+                log("Test will wait 610 seconds (10 min 10 sec) to trigger disconnection");
+                log("Expected: Communication link failure when acquiring connection after wait_timeout\n");
+                
+                // 运行3次测试以提高复现概率
+                for (int i = 1; i <= 3; i++) {
+                    log("\n========== Test Round " + i + "/3 ==========");
+                    testDetectionWindowVulnerability(sql);
+                    
+                    if (i < 3) {
+                        log("Waiting 30 seconds before next round...\n");
+                        Thread.sleep(30000);
+                    }
+                }
+                
+                log("\n========== Window Vulnerability Test Completed ==========");
+                return;
+            }
+            
+            // 原有的长时间测试模式
+            log("Mode: Long-term Idle Test");
             log("Pattern: Query → Idle 12 minutes → Query again (should fail)\n");
             log("KeepAlive: disabled, wait_timeout should disconnect idle connections\n");
             log("Please ensure MySQL wait_timeout is set to 600 seconds (10 minutes)\n");
