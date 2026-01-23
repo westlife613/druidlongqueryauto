@@ -81,7 +81,7 @@ public class DruidLongQueryExample {
         dataSource.setKeepAlive(true);                    // 开启keepAlive保持连接
         dataSource.setKeepAliveBetweenTimeMillis(35000); // 保活间隔35秒
         dataSource.setTestWhileIdle(true);               // 开启空闲连接检测
-        dataSource.setTestOnBorrow(false);                // 获取连接时检测
+        dataSource.setTestOnBorrow(true);                // 获取连接时检测
         dataSource.setTestOnReturn(false);               // 归还时不检测
         dataSource.setValidationQuery("SELECT 1");       // 验证查询语句
         dataSource.setValidationQueryTimeout(5);         // 验证查询超时时间(秒)
