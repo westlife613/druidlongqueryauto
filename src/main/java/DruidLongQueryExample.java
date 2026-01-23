@@ -72,9 +72,9 @@ public class DruidLongQueryExample {
         }
         
        
-        dataSource.setInitialSize(20);                    // 初始化20个连接
+        dataSource.setInitialSize(40);                    // 初始化40个连接
         dataSource.setMinIdle(5);                         // 最小保持5个空闲连接
-        dataSource.setMaxActive(20);                      // 最大20个连接
+        dataSource.setMaxActive(40);                      // 最大40个连接
         dataSource.setMaxWait(120000);                    // 获取连接最大等待时间(毫秒)
         
         // ===== AWS生产环境配置（与现有Druid配置保持一致）=====
@@ -419,13 +419,13 @@ public class DruidLongQueryExample {
             //     initTestData();
             // }
             
-            // 高并发高内存压力测试：20线程并发死循环执行大表聚合排序SQL
-            final String sql = "SELECT * FROM big_table ORDER BY col2 DESC LIMIT 500000";
+            // 高并发慢查询压力测试：40线程并发死循环执行SELECT SLEEP(60)
+            final String sql = "SELECT SLEEP(60)";
             log("Test SQL: " + sql);
-            final int threadCount = 20;
+            final int threadCount = 40;
             final long duration = 60 * 60 * 1000; // 1小时
             final long startTime = System.currentTimeMillis();
-            log("高内存压力模式：20线程并发，循环执行大表聚合排序SQL，maxActive=20，持续1小时");
+            log("高并发慢查询压力模式：40线程并发，循环执行SELECT SLEEP(60)，maxActive=40，持续1小时");
             log("Start time: " + dateFormat.format(new Date(startTime)));
             log("预计结束时间: " + dateFormat.format(new Date(startTime + duration)));
             log("Press Ctrl+C to stop anytime\n");
@@ -446,16 +446,16 @@ public class DruidLongQueryExample {
                         }
                     }
                     log("[Thread-" + threadId + "] Completed. Total cycles: " + cycleCount);
-                }, "AggressiveQueryThread-" + (i + 1));
+                }, "SlowQueryThread-" + (i + 1));
                 threads[i].start();
                 log("Thread-" + threadId + " started");
                 try {
-                    Thread.sleep(500); // 更快地启动所有线程
+                    Thread.sleep(200); // 更快地启动所有线程
                 } catch (InterruptedException e) {
                     e.printStackTrace();
                 }
             }
-            log("\nAll threads started, running aggressive high-memory query test...");
+            log("\nAll threads started, running aggressive slow-query test...");
             for (int i = 0; i < threadCount; i++) {
                 try {
                     threads[i].join();
