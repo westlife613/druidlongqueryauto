@@ -72,9 +72,9 @@ public class DruidLongQueryExample {
         }
         
        
-        dataSource.setInitialSize(3);                    // 初始化连接数
-        dataSource.setMinIdle(3);                        // 最小空闲连接数
-        dataSource.setMaxActive(3);                       // 最大活跃连接数（测试用小连接池）
+        dataSource.setInitialSize(1);                    // 初始化1个连接（window测试用）
+        dataSource.setMinIdle(1);                        // 最小保持1个空闲连接
+        dataSource.setMaxActive(1);                      // 最大1个连接（确保测试同一个连接）
         dataSource.setMaxWait(120000);                    // 获取连接最大等待时间(毫秒) - 2分钟
         
         // ===== AWS生产环境配置（与现有Druid配置保持一致）=====
