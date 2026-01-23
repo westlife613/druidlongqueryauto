@@ -86,8 +86,8 @@ public class DruidLongQueryExample {
         dataSource.setValidationQuery("SELECT 1");       // 验证查询语句
         dataSource.setValidationQueryTimeout(5);         // 验证查询超时时间(秒)
         
-        // 连接回收配置（与AWS环境一致）
-        dataSource.setTimeBetweenEvictionRunsMillis(5000);    // 5秒检测一次（AWS配置）
+        // 连接回收配置（与AWS生产环境一致）
+        dataSource.setTimeBetweenEvictionRunsMillis(60000);   // 60秒检测一次（AWS生产配置）
         dataSource.setMinEvictableIdleTimeMillis(60000);      // 最小空闲1分钟可回收
         dataSource.setMaxEvictableIdleTimeMillis(780000);     // 最大空闲13分钟回收（大于测试的12分钟空闲时间）
         
@@ -305,25 +305,27 @@ public class DruidLongQueryExample {
             log("Return time: " + dateFormat.format(new Date()));
             printPoolStatus();
             
-            // Step 3: 等待610秒，刚好超过wait_timeout(600s)
-            int waitTime = 610;  // 610秒 = 10分10秒
+            // Step 3: 等待610秒，刚好超过wait_timeout(600s)，落在检测窗口内
+            int waitTime = 630;  // 630秒 = 10分30秒，确保在600-660秒的漏洞窗口内
             log("\nStep 3: Waiting " + waitTime + " seconds (" + (waitTime/60) + " min " + (waitTime%60) + " sec)...");
-            log("Expected timeline:");
+            log("Expected timeline (Production scenario):");
             log("  T=0s:   Connection returned to pool");
+            log("  T=540s: Druid检测（第9分钟）- 连接正常");
             log("  T=600s: MySQL kills connection due to wait_timeout");
-            log("  T=605s: Druid might detect in next testWhileIdle cycle (every 5s)");
-            log("  T=610s: We acquire connection - racing with Druid detection!");
-            log("\nDruid testWhileIdle runs every " + (dataSource.getTimeBetweenEvictionRunsMillis()/1000) + "s");
-            log("If we get dead connection → Communication link failure!\n");
+            log("  T=630s: ← WE ARE HERE (in 60-second vulnerability window)");
+            log("  T=660s: Druid下次检测才会发现死连接");
+            log("\nDruid testWhileIdle runs every " + (dataSource.getTimeBetweenEvictionRunsMillis()/1000) + "s (60 seconds)");
+            log("Vulnerability window: 600s-660s (60 seconds) where dead connections exist in pool");
+            log("If we get connection in this window → Communication link failure!\n");
             
             for (int i = 1; i <= waitTime; i++) {
                 Thread.sleep(1000);
                 if (i % 60 == 0) {  // 每分钟打印一次
                     log("  [" + (i/60) + " min] Idle time: " + i + "s / " + waitTime + "s");
                     printPoolStatus();
-                } else if (i >= 595 && i <= 610) {  // 关键时刻每秒打印
-                    log("  [" + i + "s] Critical moment approaching...");
+                } else if (i >= 595 && i <= 635) {  // 关键时刻每5秒打印
                     if (i % 5 == 0) {
+                        log("  [" + i + "s] Critical window approaching/active...");
                         printPoolStatus();
                     }
                 }
