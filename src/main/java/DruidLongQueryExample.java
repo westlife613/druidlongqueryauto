@@ -270,16 +270,17 @@ public class DruidLongQueryExample {
     
     /**
      * 模拟检测时间窗口漏洞：
-     * 连接被MySQL断开，但恰好在Druid两次检测之间被应用获取使用
+     * 连接被Aurora断开，但恰好在Druid两次检测之间被应用获取使用
      * 
-     * 适用于wait_timeout=600秒（10分钟）的环境
+     * 真实原因：aurora_fwd_*_idle_timeout=60秒（不是wait_timeout=28800秒）
      */
     public static void testDetectionWindowVulnerability(String sql) {
         log("\n########## Detection Window Vulnerability Test ##########");
-        log("Scenario: Connection killed by MySQL between Druid's detection cycles");
-        log("timeBetweenEvictionRunsMillis: " + dataSource.getTimeBetweenEvictionRunsMillis() + "ms (检测间隔)");
-        log("Database wait_timeout: 600 seconds (10 minutes)");
-        log("Test strategy: Wait 610s (just over wait_timeout), then acquire connection immediately\n");
+        log("Scenario: Connection killed by Aurora between Druid's detection cycles");
+        log("Root cause: aurora_fwd_master_idle_timeout = 60 seconds");
+        log("           aurora_fwd_writer_idle_timeout = 60 seconds");
+        log("timeBetweenEvictionRunsMillis: " + dataSource.getTimeBetweenEvictionRunsMillis() + "ms (60 seconds)");
+        log("Test strategy: Wait 90s (in 60-120s vulnerability window), then acquire connection\n");
         
         DruidPooledConnection conn = null;
         
@@ -305,38 +306,43 @@ public class DruidLongQueryExample {
             log("Return time: " + dateFormat.format(new Date()));
             printPoolStatus();
             
-            // Step 3: 等待610秒，刚好超过wait_timeout(600s)，落在检测窗口内
-            int waitTime = 630;  // 630秒 = 10分30秒，确保在600-660秒的漏洞窗口内
+            // Step 3: 等待90秒，刚好在60-120秒的漏洞窗口内
+            int waitTime = 90;  // 90秒，确保在60-120秒的漏洞窗口内
             log("\nStep 3: Waiting " + waitTime + " seconds (" + (waitTime/60) + " min " + (waitTime%60) + " sec)...");
-            log("Expected timeline (Production scenario):");
-            log("  T=0s:   Connection returned to pool");
-            log("  T=540s: Druid检测（第9分钟）- 连接正常");
-            log("  T=600s: MySQL kills connection due to wait_timeout");
-            log("  T=630s: ← WE ARE HERE (in 60-second vulnerability window)");
-            log("  T=660s: Druid下次检测才会发现死连接");
+            log("Expected timeline (REAL Production scenario):");
+            log("  T=0s:   Connection returned to pool, Druid刚检测过");
+            log("  T=60s:  Aurora kills connection (aurora_fwd_*_idle_timeout=60s) ← ROOT CAUSE!");
+            log("  T=90s:  ← WE ARE HERE (in 60-120s vulnerability window)");
+            log("  T=120s: Druid下次检测才会发现死连接");
             log("\nDruid testWhileIdle runs every " + (dataSource.getTimeBetweenEvictionRunsMillis()/1000) + "s (60 seconds)");
-            log("Vulnerability window: 600s-660s (60 seconds) where dead connections exist in pool");
-            log("If we get connection in this window → Communication link failure!\n");
+            log("Vulnerability window: 60s-120s (60 seconds) where dead connections exist in pool");
+            log("This explains why production errors occur around 90 seconds!\n");
             
             for (int i = 1; i <= waitTime; i++) {
                 Thread.sleep(1000);
-                if (i % 60 == 0) {  // 每分钟打印一次
-                    log("  [" + (i/60) + " min] Idle time: " + i + "s / " + waitTime + "s");
-                    printPoolStatus();
-                } else if (i >= 595 && i <= 635) {  // 关键时刻每5秒打印
-                    if (i % 5 == 0) {
-                        log("  [" + i + "s] Critical window approaching/active...");
+                if (i % 10 == 0) {  // 每10秒打印一次
+                    log("  [" + i + "s] Idle time: " + i + "s / " + waitTime + "s");
+                    if (i % 30 == 0) {
                         printPoolStatus();
+                    }
+                } else if (i >= 55 && i <= 65) {  // Aurora断连关键时刻
+                    if (i % 5 == 0) {
+                        log("  [" + i + "s] Aurora disconnection window (60s)...");
+                    }
+                } else if (i >= 85 && i <= 95) {  // 获取连接关键时刻
+                    if (i % 5 == 0) {
+                        log("  [" + i + "s] Approaching acquisition moment...");
                     }
                 }
             }
             
             log("\nWait completed: " + dateFormat.format(new Date()));
-            log("Expected state: Connection physically closed by MySQL at 600s");
-            log("                Might still be in Druid pool if detection missed it");
+            log("Expected state: Connection physically closed by Aurora at 60s");
+            log("                Druid's last check was at 0s, next check at 120s");
+            log("                We are in the vulnerability window!");
             
-            // Step 4: 立即尝试获取连接（可能取到死连接）
-            log("\nStep 4: Attempting to acquire connection NOW (racing with Druid detection)...");
+            // Step 4: 立即尝试获取连接（应该取到死连接）
+            log("\nStep 4: Attempting to acquire connection NOW (in vulnerability window)...");
             log("*** Critical moment: testOnBorrow=false, no validation on borrow ***");
             printPoolStatus();
             
@@ -356,10 +362,11 @@ public class DruidLongQueryExample {
                 log("✗ Test did not reproduce the issue - Query succeeded!");
                 log("Result: " + rs2.getString(1));
                 log("\nPossible reasons:");
-                log("  1. keepAlive prevented disconnection (should be disabled)");
-                log("  2. Druid's testWhileIdle detected and replaced the connection before we got it");
-                log("  3. Need to retry - timing is critical");
-                log("\nSuggestion: Run test multiple times to hit the timing window");
+                log("  1. Druid's testWhileIdle detected and replaced the connection (check lastValidateTimeMillis)");
+                log("  2. Timing missed - Druid检测happened between 60-90s");
+                log("  3. keepAlive might be active despite being disabled");
+                log("\nNOTE: Since Druid checks every 60s, there's timing race.");
+                log("      If Druid's check happened at 65s or 70s, it would detect and fix before we get at 90s.");
             }
             
             rs2.close();
@@ -376,10 +383,14 @@ public class DruidLongQueryExample {
             if (isConnectionError(e)) {
                 log("\n✓✓✓ SUCCESS: Communication link failure reproduced! ✓✓✓");
                 log("Root cause confirmed:");
-                log("  - MySQL killed connection at wait_timeout (600s)");
+                log("  - Aurora killed connection at aurora_fwd_*_idle_timeout (60s)");
+                log("  - Druid's testWhileIdle every 60s has a detection gap");
                 log("  - Druid's testOnBorrow=false didn't validate connection on borrow");
                 log("  - Application got dead connection from pool");
-                log("\nProduction fix: Enable testOnBorrow=true to validate before use");
+                log("\nProduction fixes:");
+                log("  Option 1: Enable testOnBorrow=true (validates every borrow, slight performance cost)");
+                log("  Option 2: Reduce timeBetweenEvictionRunsMillis to 30s (more frequent checks)");
+                log("  Option 3: Enable keepAlive=true with keepAliveBetweenTimeMillis=30s (proactive validation)");
             }
             
             e.printStackTrace();
@@ -562,24 +573,25 @@ public class DruidLongQueryExample {
             log("\n===== Test Mode: " + testMode + " =====\n");
             
             if ("window".equalsIgnoreCase(testMode)) {
-                // 时间窗口漏洞测试（适用于wait_timeout=10分钟）
+                // 时间窗口漏洞测试（适用于aurora_fwd_*_idle_timeout=60秒）
                 log("Mode: Detection Window Vulnerability Test");
-                log("Database wait_timeout: 600 seconds (10 minutes)");
-                log("Test will wait 610 seconds (10 min 10 sec) to trigger disconnection");
-                log("Expected: Communication link failure when acquiring connection after wait_timeout\n");
+                log("Aurora idle timeout: 60 seconds (aurora_fwd_master_idle_timeout)");
+                log("Test will wait 90 seconds (in 60-120s vulnerability window)");
+                log("Expected: Communication link failure when acquiring connection in the window\n");
                 
-                // 运行3次测试以提高复现概率
-                for (int i = 1; i <= 3; i++) {
-                    log("\n========== Test Round " + i + "/3 ==========");
+                // 运行5次测试以提高复现概率（每次约2分钟）
+                for (int i = 1; i <= 5; i++) {
+                    log("\n========== Test Round " + i + "/5 ==========");
                     testDetectionWindowVulnerability(sql);
                     
-                    if (i < 3) {
+                    if (i < 5) {
                         log("Waiting 30 seconds before next round...\n");
                         Thread.sleep(30000);
                     }
                 }
                 
                 log("\n========== Window Vulnerability Test Completed ==========");
+                log("Total test time: ~12 minutes (5 rounds × 2min + 4 × 30s breaks)");
                 return;
             }
             
