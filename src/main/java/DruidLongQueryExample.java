@@ -419,13 +419,13 @@ public class DruidLongQueryExample {
             //     initTestData();
             // }
             
-            // 高并发慢查询压力测试：20线程并发死循环执行SELECT SLEEP(15)
-            final String sql = "SELECT SLEEP(15) as test_column";
+            // 高并发高内存压力测试：20线程并发死循环执行大表聚合排序SQL
+            final String sql = "SELECT col1, COUNT(*) cnt FROM big_table GROUP BY col1 ORDER BY cnt DESC LIMIT 100";
             log("Test SQL: " + sql);
             final int threadCount = 20;
             final long duration = 60 * 60 * 1000; // 1小时
             final long startTime = System.currentTimeMillis();
-            log("激进模式：20线程并发，循环执行慢查询SLEEP(15)，maxActive=20，持续1小时");
+            log("高内存压力模式：20线程并发，循环执行大表聚合排序SQL，maxActive=20，持续1小时");
             log("Start time: " + dateFormat.format(new Date(startTime)));
             log("预计结束时间: " + dateFormat.format(new Date(startTime + duration)));
             log("Press Ctrl+C to stop anytime\n");
@@ -455,7 +455,7 @@ public class DruidLongQueryExample {
                     e.printStackTrace();
                 }
             }
-            log("\nAll threads started, running aggressive slow query test...");
+            log("\nAll threads started, running aggressive high-memory query test...");
             for (int i = 0; i < threadCount; i++) {
                 try {
                     threads[i].join();
