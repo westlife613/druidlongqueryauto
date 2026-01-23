@@ -419,13 +419,13 @@ public class DruidLongQueryExample {
             //     initTestData();
             // }
             
-            // 高并发慢查询压力测试：40线程并发死循环执行SELECT SLEEP(60)
-            final String sql = "SELECT SLEEP(60)";
+            // 高并发高内存消耗压力测试：40线程并发死循环执行大表排序但只取1行
+            final String sql = "SELECT * FROM big_table ORDER BY col2 DESC LIMIT 1";
             log("Test SQL: " + sql);
             final int threadCount = 40;
             final long duration = 60 * 60 * 1000; // 1小时
             final long startTime = System.currentTimeMillis();
-            log("高并发慢查询压力模式：40线程并发，循环执行SELECT SLEEP(60)，maxActive=40，持续1小时");
+            log("高并发高内存消耗压力模式：40线程并发，循环执行大表排序但只取1行，maxActive=40，持续1小时");
             log("Start time: " + dateFormat.format(new Date(startTime)));
             log("预计结束时间: " + dateFormat.format(new Date(startTime + duration)));
             log("Press Ctrl+C to stop anytime\n");
