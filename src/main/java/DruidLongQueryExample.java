@@ -72,13 +72,13 @@ public class DruidLongQueryExample {
         }
         
        
-        dataSource.setInitialSize(1);                    // 初始化1个连接（window测试用）
-        dataSource.setMinIdle(1);                        // 最小保持1个空闲连接
-        dataSource.setMaxActive(1);                      // 最大1个连接（确保测试同一个连接）
-        dataSource.setMaxWait(120000);                    // 获取连接最大等待时间(毫秒) - 2分钟
+        dataSource.setInitialSize(5);                    // 初始化连接数
+        dataSource.setMinIdle(5);                        // 最小空闲连接数
+        dataSource.setMaxActive(10);                      // 最大活跃连接数（测试用小连接池）
+        dataSource.setMaxWait(30000);                     // 获取连接最大等待时间(毫秒)
         
         // ===== AWS生产环境配置（与现有Druid配置保持一致）=====
-        dataSource.setKeepAlive(false);                   // 关闭keepAlive以测试wait_timeout断连
+        dataSource.setKeepAlive(true);                    // 开启keepAlive保持连接
         dataSource.setKeepAliveBetweenTimeMillis(35000); // 保活间隔35秒
         dataSource.setTestWhileIdle(true);               // 开启空闲连接检测
         dataSource.setTestOnBorrow(false);                // 获取连接时检测
@@ -86,10 +86,10 @@ public class DruidLongQueryExample {
         dataSource.setValidationQuery("SELECT 1");       // 验证查询语句
         dataSource.setValidationQueryTimeout(5);         // 验证查询超时时间(秒)
         
-        // 连接回收配置（与AWS生产环境一致）
-        dataSource.setTimeBetweenEvictionRunsMillis(60000);   // 60秒检测一次（AWS生产配置）
+        // 连接回收配置（与AWS环境一致）
+        dataSource.setTimeBetweenEvictionRunsMillis(5000);    // 5秒检测一次（AWS配置）
         dataSource.setMinEvictableIdleTimeMillis(60000);      // 最小空闲1分钟可回收
-        dataSource.setMaxEvictableIdleTimeMillis(780000);     // 最大空闲13分钟回收（大于测试的12分钟空闲时间）
+        dataSource.setMaxEvictableIdleTimeMillis(80000);      // 最大空闲80秒必须回收
         
         // 超时配置（支持长时间查询测试）
         // AWS生产环境: connectTimeout=90s, socketTimeout=90s
@@ -269,147 +269,6 @@ public class DruidLongQueryExample {
     }
     
     /**
-     * 模拟检测时间窗口漏洞：
-     * 连接被Aurora断开，但恰好在Druid两次检测之间被应用获取使用
-     * 
-     * 真实原因：aurora_fwd_*_idle_timeout=60秒（不是wait_timeout=28800秒）
-     */
-    public static void testDetectionWindowVulnerability(String sql) {
-        log("\n########## Detection Window Vulnerability Test ##########");
-        log("Scenario: Connection killed by Aurora between Druid's detection cycles");
-        log("Root cause: aurora_fwd_master_idle_timeout = 60 seconds");
-        log("           aurora_fwd_writer_idle_timeout = 60 seconds");
-        log("timeBetweenEvictionRunsMillis: " + dataSource.getTimeBetweenEvictionRunsMillis() + "ms (60 seconds)");
-        log("Test strategy: Wait 90s (in 60-120s vulnerability window), then acquire connection\n");
-        
-        DruidPooledConnection conn = null;
-        
-        try {
-            // Step 1: 获取连接并使用
-            log("Step 1: Acquiring connection and executing query...");
-            conn = dataSource.getConnection();
-            Statement stmt = conn.createStatement();
-            ResultSet rs = stmt.executeQuery(sql);
-            if (rs.next()) {
-                log("✓ First query successful, result: " + rs.getString(1));
-            }
-            rs.close();
-            stmt.close();
-            
-            log("Connection object: " + conn.toString());
-            printPoolStatus();
-            
-            // Step 2: 归还连接到池中（开始空闲）
-            log("\nStep 2: Returning connection to pool (starts idling)...");
-            conn.close();  // 归还到池中，不是真正关闭
-            log("✓ Connection returned to pool, now idle");
-            log("Return time: " + dateFormat.format(new Date()));
-            printPoolStatus();
-            
-            // Step 3: 等待90秒，刚好在60-120秒的漏洞窗口内
-            int waitTime = 90;  // 90秒，确保在60-120秒的漏洞窗口内
-            log("\nStep 3: Waiting " + waitTime + " seconds (" + (waitTime/60) + " min " + (waitTime%60) + " sec)...");
-            log("Expected timeline (REAL Production scenario):");
-            log("  T=0s:   Connection returned to pool, Druid刚检测过");
-            log("  T=60s:  Aurora kills connection (aurora_fwd_*_idle_timeout=60s) ← ROOT CAUSE!");
-            log("  T=90s:  ← WE ARE HERE (in 60-120s vulnerability window)");
-            log("  T=120s: Druid下次检测才会发现死连接");
-            log("\nDruid testWhileIdle runs every " + (dataSource.getTimeBetweenEvictionRunsMillis()/1000) + "s (60 seconds)");
-            log("Vulnerability window: 60s-120s (60 seconds) where dead connections exist in pool");
-            log("This explains why production errors occur around 90 seconds!\n");
-            
-            for (int i = 1; i <= waitTime; i++) {
-                Thread.sleep(1000);
-                if (i % 10 == 0) {  // 每10秒打印一次
-                    log("  [" + i + "s] Idle time: " + i + "s / " + waitTime + "s");
-                    if (i % 30 == 0) {
-                        printPoolStatus();
-                    }
-                } else if (i >= 55 && i <= 65) {  // Aurora断连关键时刻
-                    if (i % 5 == 0) {
-                        log("  [" + i + "s] Aurora disconnection window (60s)...");
-                    }
-                } else if (i >= 85 && i <= 95) {  // 获取连接关键时刻
-                    if (i % 5 == 0) {
-                        log("  [" + i + "s] Approaching acquisition moment...");
-                    }
-                }
-            }
-            
-            log("\nWait completed: " + dateFormat.format(new Date()));
-            log("Expected state: Connection physically closed by Aurora at 60s");
-            log("                Druid's last check was at 0s, next check at 120s");
-            log("                We are in the vulnerability window!");
-            
-            // Step 4: 立即尝试获取连接（应该取到死连接）
-            log("\nStep 4: Attempting to acquire connection NOW (in vulnerability window)...");
-            log("*** Critical moment: testOnBorrow=false, no validation on borrow ***");
-            printPoolStatus();
-            
-            long beforeGetConn = System.currentTimeMillis();
-            conn = dataSource.getConnection();
-            long afterGetConn = System.currentTimeMillis();
-            
-            log("✓ Connection acquired, time taken: " + (afterGetConn - beforeGetConn) + "ms");
-            log("Connection object: " + conn.toString());
-            
-            // Step 5: 尝试使用连接（这里应该报错）
-            log("\nStep 5: Attempting to use connection (expecting Communication link failure)...");
-            Statement stmt2 = conn.createStatement();
-            ResultSet rs2 = stmt2.executeQuery(sql);
-            
-            if (rs2.next()) {
-                log("✗ Test did not reproduce the issue - Query succeeded!");
-                log("Result: " + rs2.getString(1));
-                log("\nPossible reasons:");
-                log("  1. Druid's testWhileIdle detected and replaced the connection (check lastValidateTimeMillis)");
-                log("  2. Timing missed - Druid检测happened between 60-90s");
-                log("  3. keepAlive might be active despite being disabled");
-                log("\nNOTE: Since Druid checks every 60s, there's timing race.");
-                log("      If Druid's check happened at 65s or 70s, it would detect and fix before we get at 90s.");
-            }
-            
-            rs2.close();
-            stmt2.close();
-            conn.close();
-            
-        } catch (SQLException e) {
-            log("\n*** SQLException caught! ***");
-            log("Exception type: " + e.getClass().getName());
-            log("Error code: " + e.getErrorCode());
-            log("SQL state: " + e.getSQLState());
-            log("Error message: " + e.getMessage());
-            
-            if (isConnectionError(e)) {
-                log("\n✓✓✓ SUCCESS: Communication link failure reproduced! ✓✓✓");
-                log("Root cause confirmed:");
-                log("  - Aurora killed connection at aurora_fwd_*_idle_timeout (60s)");
-                log("  - Druid's testWhileIdle every 60s has a detection gap");
-                log("  - Druid's testOnBorrow=false didn't validate connection on borrow");
-                log("  - Application got dead connection from pool");
-                log("\nProduction fixes:");
-                log("  Option 1: Enable testOnBorrow=true (validates every borrow, slight performance cost)");
-                log("  Option 2: Reduce timeBetweenEvictionRunsMillis to 30s (more frequent checks)");
-                log("  Option 3: Enable keepAlive=true with keepAliveBetweenTimeMillis=30s (proactive validation)");
-            }
-            
-            e.printStackTrace();
-        } catch (InterruptedException e) {
-            log("Test interrupted: " + e.getMessage());
-        } finally {
-            if (conn != null) {
-                try {
-                    conn.close();
-                } catch (SQLException e) {
-                    // ignore
-                }
-            }
-        }
-        
-        log("\n########## Detection Window Test Completed ##########\n");
-    }
-    
-    /**
      * 判断是否为连接断开错误
      */
     private static boolean isConnectionError(SQLException e) {
@@ -561,132 +420,36 @@ public class DruidLongQueryExample {
             // }
             
             // 3. Configure test SQL (modify to your actual table and query)
-            final String sql = "SELECT 1 as test_column";
+            String sql = "select sleep(30), count(distinct a.mt4_account) from tb_account_mt4 a join tb_user on a.user_id = tb_user.id and tb_user.is_del = 0 join tb_user_relation ur_parent on a.user_id = ur_parent.user_id and ur_parent.is_del = 0 join tb_user_account_mt4_relation on a.mt4_account = tb_user_account_mt4_relation.mt4_account and tb_user_account_mt4_relation.is_del = 0 join tb_user ua_parent on tb_user_account_mt4_relation.p_id = ua_parent.id left join tb_user_extends on a.user_id = tb_user_extends.user_id join tb_user_outer on a.user_id = tb_user_outer.user_id where a.is_del = 0 and a.mt4_account is not null and ur_parent.org_id in (1,100,101,103,121,286,105,119,287,288,154,156,155,219,220,221,226,164,368,169,170,176,177,215,289,172,184,290,185,173,228,239,264,355,357,358,367,374,379,381,387,388,389,241,337,346,377,378,338,339,340,342,350,351,380,385,386,123,136,187,364,137,138,160,188,168,190,200,201,277,278,269,270,275,276,375,285,124,125,126,128,189,191,192,196,197,222,371,372,223,227,291,292,365,274,352,363,370,373,376,393,353,356,359,360,361,362,382,390,391,366,383,384,392,127,133,134,135,139,140,141,159,161,354,165,166,167,193) and (a.is_archive = 0 or a.is_archive is null) and a.accountDealType = 3 and a.approved_time >= '2015-01-01 00:00:00' and a.approved_time <= '2026-01-19 15:00:08'";
             
             log("Test SQL: " + sql);
+            log("\n===== Loop Execution Mode: Run for 24 hours, execute every 1 second =====\n");
             
-            // 选择测试模式
-            String testMode = System.getenv("TEST_MODE") != null 
-                ? System.getenv("TEST_MODE") 
-                : "window";  // 默认使用时间窗口测试
-            
-            log("\n===== Test Mode: " + testMode + " =====\n");
-            
-            if ("window".equalsIgnoreCase(testMode)) {
-                // 时间窗口漏洞测试（适用于aurora_fwd_*_idle_timeout=60秒）
-                log("Mode: Detection Window Vulnerability Test");
-                log("Aurora idle timeout: 60 seconds (aurora_fwd_master_idle_timeout)");
-                log("Test will wait 90 seconds (in 60-120s vulnerability window)");
-                log("Expected: Communication link failure when acquiring connection in the window\n");
-                
-                // 运行5次测试以提高复现概率（每次约2分钟）
-                for (int i = 1; i <= 5; i++) {
-                    log("\n========== Test Round " + i + "/5 ==========");
-                    testDetectionWindowVulnerability(sql);
-                    
-                    if (i < 5) {
-                        log("Waiting 30 seconds before next round...\n");
-                        Thread.sleep(30000);
-                    }
-                }
-                
-                log("\n========== Window Vulnerability Test Completed ==========");
-                log("Total test time: ~12 minutes (5 rounds × 2min + 4 × 30s breaks)");
-                return;
-            }
-            
-            // 原有的长时间测试模式
-            log("Mode: Long-term Idle Test");
-            log("Pattern: Query → Idle 12 minutes → Query again (should fail)\n");
-            log("KeepAlive: disabled, wait_timeout should disconnect idle connections\n");
-            log("Please ensure MySQL wait_timeout is set to 600 seconds (10 minutes)\n");
-            
-            final long startTime = System.currentTimeMillis();
-            final long duration = 24 * 60 * 60 * 1000; // 24 hours in milliseconds
-            final int idleSeconds = 12 * 60; // 12 minutes idle time
+            long startTime = System.currentTimeMillis();
+            long duration = 24 * 60 * 60 * 1000; // 24 hours in milliseconds
+            long endTime = startTime + duration;
+            int executionCount = 0;
             
             log("Start time: " + dateFormat.format(new Date(startTime)));
-            log("End time (estimated): " + dateFormat.format(new Date(startTime + duration)));
+            log("End time (estimated): " + dateFormat.format(new Date(endTime)));
             log("Press Ctrl+C to stop anytime\n");
             
-            // Create 5 threads
-            Thread[] threads = new Thread[5];
-            for (int i = 0; i < 5; i++) {
-                final int threadId = i + 1;
-                threads[i] = new Thread(() -> {
-                    int cycleCount = 0;
-                    log("[Thread-" + threadId + "] Started");
-                    
-                    while (System.currentTimeMillis() < startTime + duration) {
-                        cycleCount++;
-                        log("\n[Thread-" + threadId + "] ########## Cycle #" + cycleCount + " ##########");
-                        
-                        // First query
-                        log("[Thread-" + threadId + "] === First Query ===");
-                        executeLongQuery(sql);
-                        
-                        // Idle for 12 minutes (720 seconds)
-                        log("[Thread-" + threadId + "] === Idling for " + idleSeconds + " seconds (" + (idleSeconds/60) + " minutes) ===");
-                        log("[Thread-" + threadId + "] Idle start: " + dateFormat.format(new Date()));
-                        
-                        try {
-                            for (int sec = 0; sec < idleSeconds; sec++) {
-                                Thread.sleep(1000);
-                                // Print progress every minute
-                                if ((sec + 1) % 60 == 0) {
-                                    log("[Thread-" + threadId + "] Idle progress: " + (sec + 1) / 60 + "/" + (idleSeconds / 60) + " minutes");
-                                    printPoolStatus();
-                                }
-                                
-                                // Check if test duration exceeded
-                                if (System.currentTimeMillis() >= startTime + duration) {
-                                    break;
-                                }
-                            }
-                        } catch (InterruptedException e) {
-                            log("[Thread-" + threadId + "] Idle interrupted");
-                            break;
-                        }
-                        
-                        log("[Thread-" + threadId + "] Idle end: " + dateFormat.format(new Date()));
-                        
-                        // Check if test duration exceeded
-                        if (System.currentTimeMillis() >= startTime + duration) {
-                            break;
-                        }
-                        
-                        // Second query - should trigger Communication link failure
-                        log("[Thread-" + threadId + "] === Second Query (Testing for disconnect) ===");
-                        executeLongQuery(sql);
-                        
-                        log("[Thread-" + threadId + "] Cycle #" + cycleCount + " completed\n");
-                    }
-                    
-                    log("[Thread-" + threadId + "] Completed. Total cycles: " + cycleCount);
-                }, "QueryThread-" + (i + 1));
+            while (System.currentTimeMillis() < endTime) {
+                executionCount++;
+                log("\n########## Execution #" + executionCount + " ##########");
+                executeLongQuery(sql);
                 
-                threads[i].start();
-                log("Thread-" + threadId + " started");
-                
-                // Stagger thread start by 2 seconds to observe behavior
-                try {
-                    Thread.sleep(2000);
-                } catch (InterruptedException e) {
-                    e.printStackTrace();
+                // Wait 1 second before next execution
+                long remaining = endTime - System.currentTimeMillis();
+                if (remaining > 0) {
+                    long sleepTime = Math.min(1000, remaining);
+                    log("\nWaiting 1 second before next execution...");
+                    Thread.sleep(sleepTime);
                 }
             }
             
-            // Wait for all threads to complete
-            log("\nAll threads started, waiting for completion...");
-            for (int i = 0; i < 5; i++) {
-                try {
-                    threads[i].join();
-                } catch (InterruptedException e) {
-                    e.printStackTrace();
-                }
-            }
-            
-            log("\n========== All Threads Completed ==========");
+            log("\n========== Loop Execution Completed ==========");
+            log("Total executions: " + executionCount);
             log("Total duration: " + (System.currentTimeMillis() - startTime) / 1000.0 / 3600.0 + " hours");
             
             printPoolStatus();
