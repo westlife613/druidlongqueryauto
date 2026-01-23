@@ -72,10 +72,10 @@ public class DruidLongQueryExample {
         }
         
        
-        dataSource.setInitialSize(5);                    // 初始化连接数
-        dataSource.setMinIdle(5);                        // 最小空闲连接数
-        dataSource.setMaxActive(10);                      // 最大活跃连接数（测试用小连接池）
-        dataSource.setMaxWait(30000);                     // 获取连接最大等待时间(毫秒)
+        dataSource.setInitialSize(20);                    // 初始化20个连接
+        dataSource.setMinIdle(5);                         // 最小保持5个空闲连接
+        dataSource.setMaxActive(20);                      // 最大20个连接
+        dataSource.setMaxWait(120000);                    // 获取连接最大等待时间(毫秒)
         
         // ===== AWS生产环境配置（与现有Druid配置保持一致）=====
         dataSource.setKeepAlive(true);                    // 开启keepAlive保持连接
@@ -419,47 +419,58 @@ public class DruidLongQueryExample {
             //     initTestData();
             // }
             
-            // 3. Configure test SQL (modify to your actual table and query)
-            String sql = "SELECT symbol totalType, sum(volume) totalValue,       SUM(CASE WHEN mt4_currency ='USC' THEN volume ELSE 0 END) AS totalVolumeMicro,       SUM(CASE WHEN mt4_currency !='USC' THEN volume ELSE 0 END) AS totalVolumeStandard   FROM    (SELECT distinct v.symbol, v.volume, v.ticket,v.mt4_currency FROM tb_commission_ib b     left join tb_commission_ib_volume v     on b.ticket = v.ticket and b.server = v.dataSourceId     WHERE b.ib_id = 168578       AND b.close_time >= '2025-03-01 00:00:00'       AND b.close_time <= '2026-01-13 23:59:59'       AND b.agentAccount = 3603       AND b.tradeOnCredit = 0    ) a   GROUP BY SYMBOL   ORDER BY totalValue DESC    limit 5";
-            
+            // 高并发慢查询压力测试：20线程并发死循环执行SELECT SLEEP(15)
+            final String sql = "SELECT SLEEP(15) as test_column";
             log("Test SQL: " + sql);
-            log("\n===== Loop Execution Mode: Run for 24 hours, execute every 1 second =====\n");
-            
-            long startTime = System.currentTimeMillis();
-            long duration = 24 * 60 * 60 * 1000; // 24 hours in milliseconds
-            long endTime = startTime + duration;
-            int executionCount = 0;
-            
+            final int threadCount = 20;
+            final long duration = 60 * 60 * 1000; // 1小时
+            final long startTime = System.currentTimeMillis();
+            log("激进模式：20线程并发，循环执行慢查询SLEEP(15)，maxActive=20，持续1小时");
             log("Start time: " + dateFormat.format(new Date(startTime)));
-            log("End time (estimated): " + dateFormat.format(new Date(endTime)));
+            log("预计结束时间: " + dateFormat.format(new Date(startTime + duration)));
             log("Press Ctrl+C to stop anytime\n");
-            
-            while (System.currentTimeMillis() < endTime) {
-                executionCount++;
-                log("\n########## Execution #" + executionCount + " ##########");
-                executeLongQuery(sql);
-                
-                // Wait 1 second before next execution
-                long remaining = endTime - System.currentTimeMillis();
-                if (remaining > 0) {
-                    long sleepTime = Math.min(1000, remaining);
-                    log("\nWaiting 1 second before next execution...");
-                    Thread.sleep(sleepTime);
+
+            Thread[] threads = new Thread[threadCount];
+            for (int i = 0; i < threadCount; i++) {
+                final int threadId = i + 1;
+                threads[i] = new Thread(() -> {
+                    int cycleCount = 0;
+                    log("[Thread-" + threadId + "] Started");
+                    while (System.currentTimeMillis() < startTime + duration) {
+                        cycleCount++;
+                        log("[Thread-" + threadId + "] === Cycle #" + cycleCount + " ===");
+                        try {
+                            executeLongQuery(sql);
+                        } catch (Exception e) {
+                            log("[Thread-" + threadId + "] Exception: " + e.getMessage());
+                        }
+                    }
+                    log("[Thread-" + threadId + "] Completed. Total cycles: " + cycleCount);
+                }, "AggressiveQueryThread-" + (i + 1));
+                threads[i].start();
+                log("Thread-" + threadId + " started");
+                try {
+                    Thread.sleep(500); // 更快地启动所有线程
+                } catch (InterruptedException e) {
+                    e.printStackTrace();
                 }
             }
-            
-            log("\n========== Loop Execution Completed ==========");
-            log("Total executions: " + executionCount);
-            log("Total duration: " + (System.currentTimeMillis() - startTime) / 1000.0 / 3600.0 + " hours");
-            
+            log("\nAll threads started, running aggressive slow query test...");
+            for (int i = 0; i < threadCount; i++) {
+                try {
+                    threads[i].join();
+                } catch (InterruptedException e) {
+                    e.printStackTrace();
+                }
+            }
+            log("\n========== All Threads Completed ==========");
+            log("Total duration: " + (System.currentTimeMillis() - startTime) / 1000.0 / 60.0 + " minutes");
             printPoolStatus();
-            
         } catch (Exception e) {
             log("!!!!! Program execution error !!!!!");
             log("Error: " + e.getMessage());
             e.printStackTrace();
         } finally {
-            // Close connection pool
             closeDataSource();
         }
     }
