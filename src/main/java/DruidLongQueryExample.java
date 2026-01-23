@@ -420,7 +420,7 @@ public class DruidLongQueryExample {
             // }
             
             // 高并发高内存压力测试：20线程并发死循环执行大表聚合排序SQL
-            final String sql = "SELECT col1, COUNT(*) cnt FROM big_table GROUP BY col1 ORDER BY cnt DESC LIMIT 100";
+            final String sql = "SELECT * FROM big_table ORDER BY col2 DESC LIMIT 500000";
             log("Test SQL: " + sql);
             final int threadCount = 20;
             final long duration = 60 * 60 * 1000; // 1小时
