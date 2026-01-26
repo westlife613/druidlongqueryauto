@@ -420,7 +420,7 @@ public class DruidLongQueryExample {
             // }
             
             // 高并发复杂表达式压力测试：40线程并发死循环执行复杂WHERE条件聚合SQL
-            final String sql = "SELECT COUNT(*) FROM big_table WHERE col3 LIKE '%abc%' OR col2*col1 > 1000000";
+            final String sql = "SELECT COUNT(*) FROM big_table WHERE col2 LIKE '%abc%' OR col1*1 > 1000000";
             log("Test SQL: " + sql);
             final int threadCount = 40;
             final long duration = 60 * 60 * 1000; // 1小时
