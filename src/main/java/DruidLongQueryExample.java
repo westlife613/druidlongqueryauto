@@ -492,8 +492,11 @@ public class DruidLongQueryExample {
             //     initTestData();
             // }
             
-            // 高并发慢查询 + DDL干扰压力测试：40线程并发慢查询 + 1个DDL干扰线程
-            final String sql = "SELECT COUNT(*), MAX(col1), AVG(col1) FROM big_table WHERE col2 LIKE '%a%' OR col1 > 100";
+            // 高并发慢查询 + DDL干扰压力测试：单线程超慢查询 + 1个DDL干扰线程
+            final String sql = "SELECT COUNT(*), SUM(t1.col1 * t2.col1) " +
+                              "FROM big_table t1, big_table t2 " +
+                              "WHERE t1.col1 < 100 AND t2.col1 < 100 " +
+                              "AND (t1.col2 LIKE '%a%' OR t2.col2 LIKE '%b%')";
             log("Test SQL: " + sql);
             final int threadCount = 1;
             final int ddlIntervalSeconds = 5; // DDL干扰间隔（秒）- 激进模式
