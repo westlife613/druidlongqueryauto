@@ -366,22 +366,23 @@ public class DruidLongQueryExample {
         try {
             log("[DDL-Thread] DDL干扰线程启动，每" + intervalSeconds + "秒执行一次DDL操作");
             
-            // DDL操作序列（激进操作，容易触发connection reset）
-            String[] ddlOperations = {
-                "ALTER TABLE big_table ADD COLUMN temp_ddl VARCHAR(500)",
-                "UPDATE big_table SET temp_ddl = REPEAT('X', 500) WHERE MOD(col1, 5) = 0",
-                "CREATE INDEX idx_temp_ddl ON big_table(temp_ddl)",
-                "DROP INDEX idx_temp_ddl ON big_table",
-                "ALTER TABLE big_table DROP COLUMN temp_ddl",
-                "ALTER TABLE big_table ADD COLUMN temp_ddl2 TEXT",
-                "ALTER TABLE big_table DROP COLUMN temp_ddl2",
-                "OPTIMIZE TABLE big_table"
-            };
-            
             int ddlIndex = 0;
             
             while (true) {
                 Thread.sleep(intervalSeconds * 1000);
+                
+                // 动态生成DDL操作，避免列名冲突
+                String tempColName = "temp_col_" + System.currentTimeMillis();
+                String tempIdxName = "idx_temp_" + System.currentTimeMillis();
+                
+                String[] ddlOperations = {
+                    "ALTER TABLE big_table ADD COLUMN " + tempColName + " VARCHAR(500)",
+                    "UPDATE big_table SET " + tempColName + " = REPEAT('X', 500) WHERE MOD(col1, 5) = 0",
+                    "ALTER TABLE big_table DROP COLUMN " + tempColName,
+                    "CREATE INDEX " + tempIdxName + " ON big_table(col1)",
+                    "DROP INDEX " + tempIdxName + " ON big_table",
+                    "OPTIMIZE TABLE big_table"
+                };
                 
                 String ddl = ddlOperations[ddlIndex % ddlOperations.length];
                 ddlIndex++;
