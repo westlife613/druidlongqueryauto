@@ -492,17 +492,17 @@ public class DruidLongQueryExample {
             //     initTestData();
             // }
             
-            // 高并发慢查询 + DDL干扰压力测试：单线程超慢查询 + 1个DDL干扰线程
+            // 高并发慢查询 + DDL干扰压力测试：单线程90秒慢查询 + DDL干扰
             final String sql = "SELECT COUNT(*), SUM(t1.col1 * t2.col1) " +
                               "FROM big_table t1, big_table t2 " +
-                              "WHERE t1.col1 < 100 AND t2.col1 < 100 " +
+                              "WHERE t1.col1 < 500 AND t2.col1 < 500 " +
                               "AND (t1.col2 LIKE '%a%' OR t2.col2 LIKE '%b%')";
             log("Test SQL: " + sql);
-            final int threadCount = 10;
+            final int threadCount = 1; // 生产场景：单线程执行90秒慢SQL
             final int ddlIntervalSeconds = 2; // DDL干扰间隔（秒）- 极限模式
             final long duration = 60 * 60 * 1000; // 1小时
             final long startTime = System.currentTimeMillis();
-            log("极限模式触发connection reset：10线程并发 + 5秒超时 + DDL每" + ddlIntervalSeconds + "秒干扰，持续1小时");
+            log("生产场景模拟：单线程90秒慢SQL + DDL干扰（每" + ddlIntervalSeconds + "秒），持续1小时");
             log("Start time: " + dateFormat.format(new Date(startTime)));
             log("预计结束时间: " + dateFormat.format(new Date(startTime + duration)));
             log("Press Ctrl+C to stop anytime\n");
