@@ -156,7 +156,7 @@ public class DruidLongQueryExample {
             
             // Create Statement
             stmt = conn.createStatement();
-            stmt.setQueryTimeout(5);  // 5秒超时，极易触发异常
+            stmt.setQueryTimeout(0);  // 无超时限制，等待DDL完成或强制断开
             
             log("Executing SQL: " + sql);
             log("Query start time: " + dateFormat.format(new Date()));
