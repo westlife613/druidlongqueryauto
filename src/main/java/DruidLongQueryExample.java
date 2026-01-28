@@ -358,6 +358,66 @@ public class DruidLongQueryExample {
     // }
 
     /**
+     * 执行DDL干扰操作，模拟慢查询途中DDL写入场景
+     */
+    public static void executeDDLInterference(int intervalSeconds) {
+        DruidPooledConnection conn = null;
+        Statement stmt = null;
+        
+        try {
+            log("[DDL-Thread] DDL干扰线程启动，每" + intervalSeconds + "秒执行一次DDL操作");
+            
+            // DDL操作序列
+            String[] ddlOperations = {
+                "ALTER TABLE big_table ADD COLUMN temp_col1 VARCHAR(50)",
+                "ALTER TABLE big_table DROP COLUMN temp_col1",
+                "CREATE INDEX idx_temp_col2 ON big_table(col2)",
+                "DROP INDEX idx_temp_col2 ON big_table",
+                "ALTER TABLE big_table MODIFY COLUMN col2 VARCHAR(200)",
+                "ALTER TABLE big_table MODIFY COLUMN col2 VARCHAR(100)"
+            };
+            
+            int ddlIndex = 0;
+            
+            while (true) {
+                Thread.sleep(intervalSeconds * 1000);
+                
+                String ddl = ddlOperations[ddlIndex % ddlOperations.length];
+                ddlIndex++;
+                
+                log("[DDL-Thread] 准备执行DDL #" + ddlIndex + ": " + ddl);
+                
+                try {
+                    conn = dataSource.getConnection();
+                    stmt = conn.createStatement();
+                    
+                    long startTime = System.currentTimeMillis();
+                    stmt.execute(ddl);
+                    long duration = System.currentTimeMillis() - startTime;
+                    
+                    log("[DDL-Thread] ✓ DDL执行成功，耗时: " + duration + "ms");
+                    
+                } catch (SQLException e) {
+                    log("[DDL-Thread] ✗ DDL执行失败: " + e.getMessage());
+                } finally {
+                    try {
+                        if (stmt != null) stmt.close();
+                        if (conn != null) conn.close();
+                    } catch (SQLException e) {
+                        e.printStackTrace();
+                    }
+                }
+            }
+            
+        } catch (InterruptedException e) {
+            log("[DDL-Thread] DDL线程被中断");
+        } catch (Exception e) {
+            log("[DDL-Thread] DDL线程异常: " + e.getMessage());
+            e.printStackTrace();
+        }
+    }
+
+    /**
      * 关闭连接池
      */
     public static void closeDataSource() {
@@ -419,16 +479,25 @@ public class DruidLongQueryExample {
             //     initTestData();
             // }
             
-            // 高并发高内存消耗压力测试：40线程并发死循环执行大表排序但只取1行
+            // 高并发慢查询 + DDL干扰压力测试：40线程并发慢查询 + 1个DDL干扰线程
             final String sql = "SELECT SLEEP(15)";
             log("Test SQL: " + sql);
             final int threadCount = 40;
+            final int ddlIntervalSeconds = 20; // DDL干扰间隔（秒）
             final long duration = 60 * 60 * 1000; // 1小时
             final long startTime = System.currentTimeMillis();
-            log("高并发高内存消耗压力模式：40线程并发，循环执行大表排序但只取1行，maxActive=40，持续1小时");
+            log("压力测试模式：40线程并发慢查询 + DDL干扰（每" + ddlIntervalSeconds + "秒），持续1小时");
             log("Start time: " + dateFormat.format(new Date(startTime)));
             log("预计结束时间: " + dateFormat.format(new Date(startTime + duration)));
             log("Press Ctrl+C to stop anytime\n");
+
+            // 启动DDL干扰线程
+            Thread ddlThread = new Thread(() -> {
+                executeDDLInterference(ddlIntervalSeconds);
+            }, "DDL-Interference-Thread");
+            ddlThread.setDaemon(true); // 设置为守护线程，主线程结束时自动终止
+            ddlThread.start();
+            log("DDL干扰线程已启动\n");
 
             Thread[] threads = new Thread[threadCount];
             for (int i = 0; i < threadCount; i++) {
