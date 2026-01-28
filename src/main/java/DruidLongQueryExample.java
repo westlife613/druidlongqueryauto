@@ -369,7 +369,6 @@ public class DruidLongQueryExample {
             int ddlCycle = 0;
             
             while (true) {
-                Thread.sleep(intervalSeconds * 1000);
                 ddlCycle++;
                 
                 // 每次循环执行一组完整的DDL操作
@@ -412,6 +411,18 @@ public class DruidLongQueryExample {
                     
                 } catch (SQLException e) {
                     log("[DDL-Thread] ✗ DDL执行失败: " + e.getMessage());
+                } finally {
+                    try {
+                        if (stmt != null) stmt.close();
+                        if (conn != null) conn.close();
+                    } catch (SQLException e) {
+                        e.printStackTrace();
+                    }
+                }
+                
+                // DDL执行完成后，等待间隔时间再执行下一轮
+                log("[DDL-Thread] DDL Cycle #" + ddlCycle + " 完成，等待" + intervalSeconds + "秒后执行下一轮");
+                Thread.sleep(intervalSeconds * 1000);
                 } finally {
                     try {
                         if (stmt != null) stmt.close();
@@ -499,7 +510,7 @@ public class DruidLongQueryExample {
                               "AND (t1.col2 LIKE '%a%' OR t2.col2 LIKE '%b%')";
             log("Test SQL: " + sql);
             final int threadCount = 1; // 生产场景：单线程执行90秒慢SQL
-            final int ddlIntervalSeconds = 2; // DDL干扰间隔（秒）- 极限模式
+            final int ddlIntervalSeconds = 30; // DDL干扰间隔（秒）- 更贴近生产场景
             final long duration = 60 * 60 * 1000; // 1小时
             final long startTime = System.currentTimeMillis();
             log("生产场景模拟：单线程90秒慢SQL + DDL干扰（每" + ddlIntervalSeconds + "秒），持续1小时");
