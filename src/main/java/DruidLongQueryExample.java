@@ -156,7 +156,7 @@ public class DruidLongQueryExample {
             
             // Create Statement
             stmt = conn.createStatement();
-            stmt.setQueryTimeout(30);  // 30秒超时，超时后会触发异常
+            stmt.setQueryTimeout(5);  // 5秒超时，极易触发异常
             
             log("Executing SQL: " + sql);
             log("Query start time: " + dateFormat.format(new Date()));
@@ -498,22 +498,28 @@ public class DruidLongQueryExample {
                               "WHERE t1.col1 < 100 AND t2.col1 < 100 " +
                               "AND (t1.col2 LIKE '%a%' OR t2.col2 LIKE '%b%')";
             log("Test SQL: " + sql);
-            final int threadCount = 1;
-            final int ddlIntervalSeconds = 5; // DDL干扰间隔（秒）- 激进模式
+            final int threadCount = 10;
+            final int ddlIntervalSeconds = 2; // DDL干扰间隔（秒）- 极限模式
             final long duration = 60 * 60 * 1000; // 1小时
             final long startTime = System.currentTimeMillis();
-            log("单线程慢查询 + DDL干扰模式：1线程慢查询 + DDL干扰（每" + ddlIntervalSeconds + "秒），持续1小时");
+            log("极限模式触发connection reset：10线程并发 + 5秒超时 + DDL每" + ddlIntervalSeconds + "秒干扰，持续1小时");
             log("Start time: " + dateFormat.format(new Date(startTime)));
             log("预计结束时间: " + dateFormat.format(new Date(startTime + duration)));
             log("Press Ctrl+C to stop anytime\n");
 
-            // 启动DDL干扰线程
+            // 启动DDL干扰线程（先等待3秒让慢查询先启动）
             Thread ddlThread = new Thread(() -> {
+                try {
+                    Thread.sleep(3000); // 等待3秒，确保慢查询先开始执行
+                    log("[DDL-Thread] *** DDL干扰线程开始工作 ***");
+                } catch (InterruptedException e) {
+                    e.printStackTrace();
+                }
                 executeDDLInterference(ddlIntervalSeconds);
             }, "DDL-Interference-Thread");
             ddlThread.setDaemon(true); // 设置为守护线程，主线程结束时自动终止
             ddlThread.start();
-            log("DDL干扰线程已启动\n");
+            log("DDL干扰线程已启动（将在3秒后开始干扰）\n");
 
             Thread[] threads = new Thread[threadCount];
             for (int i = 0; i < threadCount; i++) {
