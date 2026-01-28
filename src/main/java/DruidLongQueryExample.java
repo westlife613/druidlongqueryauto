@@ -72,9 +72,9 @@ public class DruidLongQueryExample {
         }
         
        
-        dataSource.setInitialSize(40);                    // 初始化40个连接
-        dataSource.setMinIdle(5);                         // 最小保持5个空闲连接
-        dataSource.setMaxActive(40);                      // 最大40个连接
+        dataSource.setInitialSize(10);                    // 初始化10个连接
+        dataSource.setMinIdle(2);                         // 最小保持2个空闲连接
+        dataSource.setMaxActive(10);                      // 最大10个连接（资源紧张模式）
         dataSource.setMaxWait(120000);                    // 获取连接最大等待时间(毫秒)
         
         // ===== AWS生产环境配置（与现有Druid配置保持一致）=====
@@ -484,11 +484,11 @@ public class DruidLongQueryExample {
             // 高并发慢查询 + DDL干扰压力测试：40线程并发慢查询 + 1个DDL干扰线程
             final String sql = "SELECT COUNT(*), MAX(col1), AVG(col1) FROM big_table WHERE col2 LIKE '%a%' OR col1 > 100";
             log("Test SQL: " + sql);
-            final int threadCount = 40;
+            final int threadCount = 60;
             final int ddlIntervalSeconds = 5; // DDL干扰间隔（秒）- 激进模式
             final long duration = 60 * 60 * 1000; // 1小时
             final long startTime = System.currentTimeMillis();
-            log("压力测试模式：40线程并发慢查询 + DDL干扰（每" + ddlIntervalSeconds + "秒），持续1小时");
+            log("激进资源竞争模式：60线程并发抢占10个连接 + DDL干扰（每" + ddlIntervalSeconds + "秒），持续1小时");
             log("Start time: " + dateFormat.format(new Date(startTime)));
             log("预计结束时间: " + dateFormat.format(new Date(startTime + duration)));
             log("Press Ctrl+C to stop anytime\n");
