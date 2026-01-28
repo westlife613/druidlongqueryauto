@@ -151,13 +151,12 @@ public class DruidLongQueryExample {
             log("✓ Successfully acquired database connection, time taken: " + (connEndTime - connStartTime) + "ms");
             log("Connection object: " + conn.toString());
             
-            // Disable auto-commit to keep transaction open
-            conn.setAutoCommit(false);
-            log("✓ Auto-commit disabled - transaction will remain open without commit");
+            // 保持自动提交，不开启事务，避免锁等待
+            // conn.setAutoCommit(false); // 已注释：为了触发connection reset
             
             // Create Statement
             stmt = conn.createStatement();
-            stmt.setQueryTimeout(0);  // No timeout for long queries
+            stmt.setQueryTimeout(30);  // 30秒超时，超时后会触发异常
             
             log("Executing SQL: " + sql);
             log("Query start time: " + dateFormat.format(new Date()));
