@@ -367,14 +367,14 @@ public class DruidLongQueryExample {
         try {
             log("[DDL-Thread] DDL干扰线程启动，每" + intervalSeconds + "秒执行一次DDL操作");
             
-            // DDL操作序列
+            // DDL操作序列（耗时较长的操作）
             String[] ddlOperations = {
-                "ALTER TABLE big_table ADD COLUMN temp_col1 VARCHAR(50)",
-                "ALTER TABLE big_table DROP COLUMN temp_col1",
-                "CREATE INDEX idx_temp_col2 ON big_table(col2)",
-                "DROP INDEX idx_temp_col2 ON big_table",
-                "ALTER TABLE big_table MODIFY COLUMN col2 VARCHAR(200)",
-                "ALTER TABLE big_table MODIFY COLUMN col2 VARCHAR(100)"
+                "ALTER TABLE big_table ADD COLUMN temp_col_large TEXT",
+                "UPDATE big_table SET temp_col_large = REPEAT('X', 1000) WHERE MOD(col1, 10) = 0",
+                "ALTER TABLE big_table DROP COLUMN temp_col_large",
+                "CREATE INDEX idx_col1_col2 ON big_table(col1, col2)",
+                "DROP INDEX idx_col1_col2 ON big_table",
+                "ALTER TABLE big_table ENGINE=InnoDB"
             };
             
             int ddlIndex = 0;
@@ -480,7 +480,7 @@ public class DruidLongQueryExample {
             // }
             
             // 高并发慢查询 + DDL干扰压力测试：40线程并发慢查询 + 1个DDL干扰线程
-            final String sql = "SELECT SLEEP(15)";
+            final String sql = "SELECT COUNT(*), MAX(col1), AVG(col1) FROM big_table WHERE col2 LIKE '%a%' OR col1 > 100";
             log("Test SQL: " + sql);
             final int threadCount = 40;
             final int ddlIntervalSeconds = 20; // DDL干扰间隔（秒）
