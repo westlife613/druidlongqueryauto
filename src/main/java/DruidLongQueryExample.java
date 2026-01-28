@@ -423,14 +423,6 @@ public class DruidLongQueryExample {
                 // DDL执行完成后，等待间隔时间再执行下一轮
                 log("[DDL-Thread] DDL Cycle #" + ddlCycle + " 完成，等待" + intervalSeconds + "秒后执行下一轮");
                 Thread.sleep(intervalSeconds * 1000);
-                } finally {
-                    try {
-                        if (stmt != null) stmt.close();
-                        if (conn != null) conn.close();
-                    } catch (SQLException e) {
-                        e.printStackTrace();
-                    }
-                }
             }
             
         } catch (InterruptedException e) {
