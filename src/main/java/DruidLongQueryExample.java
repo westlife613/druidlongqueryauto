@@ -13,16 +13,22 @@ import java.util.Date;
  */
 public class DruidLongQueryExample {
 
-    private static DruidDataSource dataSource;
+    private static DruidDataSource primaryDataSource;   // Primary endpoint for DDL
+    private static DruidDataSource replicaDataSource;   // Read Replica endpoint for long queries
     // SimpleDateFormat不是线程安全的，但本程序是单线程运行，可以忽略警告
     @SuppressWarnings("SimpleDateFormat")
     private static final SimpleDateFormat dateFormat = new SimpleDateFormat("yyyy-MM-dd HH:mm:ss");
 
     // ===== 数据库配置 =====
-    // 直接配置数据库连接信息（请修改为您的实际值）
-    private static final String DB_URL = System.getenv("DB_URL") != null 
-        ? System.getenv("DB_URL") 
-        : "jdbc:mysql://your-aurora-cluster.cluster-xxxxx.ap-southeast-2.rds.amazonaws.com:3306/your_database?useSSL=false&serverTimezone=UTC";
+    // Primary endpoint for DDL operations
+    private static final String PRIMARY_DB_URL = System.getenv("PRIMARY_DB_URL") != null 
+        ? System.getenv("PRIMARY_DB_URL") 
+        : "jdbc:mysql://your-aurora-cluster.cluster-xxxxx.ap-southeast-2.rds.amazonaws.com:3306/your_database?useSSL=false&serverTimezone=UTC&connectTimeout=90000&socketTimeout=0";
+    
+    // Read Replica endpoint for long queries
+    private static final String REPLICA_DB_URL = System.getenv("REPLICA_DB_URL") != null 
+        ? System.getenv("REPLICA_DB_URL") 
+        : "jdbc:mysql://your-aurora-cluster.cluster-ro-xxxxx.ap-southeast-2.rds.amazonaws.com:3306/your_database?useSSL=false&serverTimezone=UTC&connectTimeout=90000&socketTimeout=0";
     
     private static final String DB_USERNAME = System.getenv("DB_USERNAME") != null 
         ? System.getenv("DB_USERNAME") 
@@ -52,77 +58,72 @@ public class DruidLongQueryExample {
     // private static final String DB_PASSWORD = "your_password_here";
     
     /**
-     * 初始化Druid连接池
+     * 初始化Druid连接池（Primary和Read Replica）
      */
-    public static void initDataSource() {
-        dataSource = new DruidDataSource();
+    public static void initDataSources() {
+        // Primary数据源 - 用于DDL操作
+        primaryDataSource = new DruidDataSource();
+        primaryDataSource.setUrl(PRIMARY_DB_URL);
+        primaryDataSource.setUsername(DB_USERNAME);
+        primaryDataSource.setPassword(DB_PASSWORD);
+        primaryDataSource.setDriverClassName("com.mysql.cj.jdbc.Driver");
+        primaryDataSource.setInitialSize(2);
+        primaryDataSource.setMinIdle(1);
+        primaryDataSource.setMaxActive(5);
+        primaryDataSource.setMaxWait(30000);
         
-        // 使用上面配置的数据库连接信息
-        dataSource.setUrl(DB_URL);
-        dataSource.setUsername(DB_USERNAME);
-        dataSource.setPassword(DB_PASSWORD);
+        // Read Replica数据源 - 用于长查询
+        replicaDataSource = new DruidDataSource();
+        replicaDataSource.setUrl(REPLICA_DB_URL);
+        replicaDataSource.setUsername(DB_USERNAME);
+        replicaDataSource.setPassword(DB_PASSWORD);
+        replicaDataSource.setDriverClassName("com.mysql.cj.jdbc.Driver");
+        replicaDataSource.setInitialSize(5);
+        replicaDataSource.setMinIdle(5);
+        replicaDataSource.setMaxActive(20);
+        replicaDataSource.setMaxWait(30000);
         
-        // 根据URL自动选择驱动
-        if (DB_URL.contains("h2")) {
-            dataSource.setDriverClassName("org.h2.Driver");
-        } else if (DB_URL.contains("mysql")) {
-            dataSource.setDriverClassName("com.mysql.cj.jdbc.Driver");
-        } else if (DB_URL.contains("postgresql")) {
-            dataSource.setDriverClassName("org.postgresql.Driver");
+        // ===== AWS生产环境配置（应用到两个数据源）=====
+        for (DruidDataSource ds : new DruidDataSource[]{primaryDataSource, replicaDataSource}) {
+            ds.setKeepAlive(true);
+            ds.setKeepAliveBetweenTimeMillis(35000);
+            ds.setTestWhileIdle(true);
+            ds.setTestOnBorrow(true);
+            ds.setTestOnReturn(false);
+            ds.setValidationQuery("SELECT 1");
+            ds.setValidationQueryTimeout(5);
+            
+            ds.setTimeBetweenEvictionRunsMillis(5000);
+            ds.setMinEvictableIdleTimeMillis(60000);
+            ds.setMaxEvictableIdleTimeMillis(80000);
+            
+            ds.setConnectionProperties(
+                "druid.stat.mergeSql=true;" +
+                "druid.stat.slowSqlMillis=5000"
+            );
+            
+            try {
+                ds.setFilters("stat");
+            } catch (SQLException e) {
+                log("Failed to set filters: " + e.getMessage());
+            }
+            
+            ds.setRemoveAbandoned(true);
+            ds.setRemoveAbandonedTimeout(3600);
+            ds.setLogAbandoned(true);
         }
         
-       
-        dataSource.setInitialSize(5);                    // 初始化15个连接
-        dataSource.setMinIdle(5);                         // 最小保持2个空闲连接
-        dataSource.setMaxActive(60);                      // 最大20个连接（10查询+1DDL+预留）
-        dataSource.setMaxWait(30000);                    // 获取连接最大等待时间(毫秒)
-        
-        // ===== AWS生产环境配置（与现有Druid配置保持一致）=====
-        dataSource.setKeepAlive(true);                    // 开启keepAlive保持连接
-        dataSource.setKeepAliveBetweenTimeMillis(35000); // 保活间隔35秒
-        dataSource.setTestWhileIdle(true);               // 开启空闲连接检测
-        dataSource.setTestOnBorrow(true);                // 获取连接时检测
-        dataSource.setTestOnReturn(false);               // 归还时不检测
-        dataSource.setValidationQuery("SELECT 1");       // 验证查询语句
-        dataSource.setValidationQueryTimeout(5);         // 验证查询超时时间(秒)
-        
-        // 连接回收配置（与AWS环境一致）
-        dataSource.setTimeBetweenEvictionRunsMillis(5000);    // 5秒检测一次（AWS配置）
-        dataSource.setMinEvictableIdleTimeMillis(60000);      // 最小空闲1分钟可回收
-        dataSource.setMaxEvictableIdleTimeMillis(80000);      // 最大空闲80秒必须回收
-        
-        // 超时配置（支持长时间查询测试）
-        // AWS生产环境: connectTimeout=90s, socketTimeout=90s
-        dataSource.setConnectionProperties(
-            "druid.stat.mergeSql=true;" +
-            "druid.stat.slowSqlMillis=5000;" +
-            "connectTimeout=90000;" +                     // 连接超时90秒
-            "socketTimeout=90000;" +                          // Socket超时设置为0（无超时，支持SLEEP(660)长查询）
-            "useSSL=false;" +                             // 本地测试不使用SSL
-            "requireSSL=false"                            // 不强制SSL
-        );
-        
-        // 开启详细日志，便于调试
         try {
-            dataSource.setFilters("stat");
-        } catch (SQLException e) {
-            log("Failed to set filters: " + e.getMessage());
-        }
-        
-        // 连接泄漏检测
-        dataSource.setRemoveAbandoned(true);
-        dataSource.setRemoveAbandonedTimeout(3600);      // 1小时
-        dataSource.setLogAbandoned(true);
-        
-        try {
-            dataSource.init();
-            log("Druid connection pool initialized successfully");
-            log("Database type: " + (DB_URL.contains("h2") ? "H2 in-memory database (local testing)" : "External database"));
-            log("Configuration mode: AWS production configuration");
-            log("MaxActive: " + dataSource.getMaxActive());
-            log("TestOnBorrow: " + dataSource.isTestOnBorrow());
-            log("TestWhileIdle: " + dataSource.isTestWhileIdle());
-            log("KeepAlive: " + dataSource.isKeepAlive());
+            primaryDataSource.init();
+            replicaDataSource.init();
+            log("Druid connection pools initialized successfully");
+            log("=== PRIMARY (DDL) endpoint: " + PRIMARY_DB_URL);
+            log("=== REPLICA (Long Query) endpoint: " + REPLICA_DB_URL);
+            log("Primary MaxActive: " + primaryDataSource.getMaxActive());
+            log("Replica MaxActive: " + replicaDataSource.getMaxActive());
+            log("TestOnBorrow: " + primaryDataSource.isTestOnBorrow());
+            log("TestWhileIdle: " + primaryDataSource.isTestWhileIdle());
+            log("KeepAlive: " + primaryDataSource.isKeepAlive());
             
         } catch (SQLException e) {
             log("ERROR - Failed to initialize Druid connection pool: " + e.getMessage());
@@ -139,24 +140,25 @@ public class DruidLongQueryExample {
         ResultSet rs = null;
         
         try {
-            log("========== Starting Long Query ==========");
-            printPoolStatus();
+            log("========== Starting Long Query on READ REPLICA ==========");
+            printReplicaPoolStatus();
             
-            // Acquire connection
-            log("Acquiring database connection...");
+            // Acquire connection from Read Replica
+            log("Acquiring database connection from Read Replica...");
             long connStartTime = System.currentTimeMillis();
-            conn = dataSource.getConnection();
+            conn = replicaDataSource.getConnection();
             long connEndTime = System.currentTimeMillis();
             
             log("✓ Successfully acquired database connection, time taken: " + (connEndTime - connStartTime) + "ms");
             log("Connection object: " + conn.toString());
             
-            // 保持自动提交，不开启事务，避免锁等待
-            // conn.setAutoCommit(false); // 已注释：为了触发connection reset
+            // Disable auto-commit to keep transaction open
+            conn.setAutoCommit(false);
+            log("✓ Auto-commit disabled - transaction will remain open without commit");
             
             // Create Statement
             stmt = conn.createStatement();
-            stmt.setQueryTimeout(0);  // 无超时限制，等待DDL完成或强制断开
+            stmt.setQueryTimeout(0);  // No timeout for long queries
             
             log("Executing SQL: " + sql);
             log("Query start time: " + dateFormat.format(new Date()));
@@ -357,14 +359,14 @@ public class DruidLongQueryExample {
     // }
 
     /**
-     * 执行DDL干扰操作，模拟慢查询途中DDL写入场景
+     * 执行DDL干扰操作，模拟生产环境中的DDL操作冲突
      */
     public static void executeDDLInterference(int intervalSeconds) {
         DruidPooledConnection conn = null;
         Statement stmt = null;
         
         try {
-            log("[DDL-Thread] DDL干扰线程启动，每" + intervalSeconds + "秒执行一次DDL操作");
+            log("[DDL-Thread] DDL干扰线程启动，使用PRIMARY endpoint，每" + intervalSeconds + "秒执行一次DDL操作");
             
             int ddlCycle = 0;
             
@@ -375,9 +377,9 @@ public class DruidLongQueryExample {
                 String tempColName = "temp_col_" + System.currentTimeMillis();
                 
                 try {
-                    // 操作1: ADD COLUMN
-                    log("[DDL-Thread] 准备执行DDL Cycle #" + ddlCycle + " - Step 1: ADD COLUMN");
-                    conn = dataSource.getConnection();
+                    // 操作1: ADD COLUMN (on PRIMARY)
+                    log("[DDL-Thread] 准备执行DDL Cycle #" + ddlCycle + " - Step 1: ADD COLUMN on PRIMARY");
+                    conn = primaryDataSource.getConnection();
                     stmt = conn.createStatement();
                     long startTime = System.currentTimeMillis();
                     stmt.execute("ALTER TABLE big_table ADD COLUMN " + tempColName + " VARCHAR(500)");
@@ -387,9 +389,9 @@ public class DruidLongQueryExample {
                     
                     Thread.sleep(1000);
                     
-                    // 操作2: UPDATE
-                    log("[DDL-Thread] 准备执行DDL Cycle #" + ddlCycle + " - Step 2: UPDATE");
-                    conn = dataSource.getConnection();
+                    // 操作2: UPDATE (on PRIMARY)
+                    log("[DDL-Thread] 准备执行DDL Cycle #" + ddlCycle + " - Step 2: UPDATE on PRIMARY");
+                    conn = primaryDataSource.getConnection();
                     stmt = conn.createStatement();
                     startTime = System.currentTimeMillis();
                     stmt.execute("UPDATE big_table SET " + tempColName + " = REPEAT('X', 500) WHERE MOD(col1, 5) = 0");
@@ -399,9 +401,9 @@ public class DruidLongQueryExample {
                     
                     Thread.sleep(1000);
                     
-                    // 操作3: DROP COLUMN
-                    log("[DDL-Thread] 准备执行DDL Cycle #" + ddlCycle + " - Step 3: DROP COLUMN");
-                    conn = dataSource.getConnection();
+                    // 操作3: DROP COLUMN (on PRIMARY)
+                    log("[DDL-Thread] 准备执行DDL Cycle #" + ddlCycle + " - Step 3: DROP COLUMN on PRIMARY");
+                    conn = primaryDataSource.getConnection();
                     stmt = conn.createStatement();
                     startTime = System.currentTimeMillis();
                     stmt.execute("ALTER TABLE big_table DROP COLUMN " + tempColName);
@@ -428,7 +430,7 @@ public class DruidLongQueryExample {
         } catch (InterruptedException e) {
             log("[DDL-Thread] DDL线程被中断");
         } catch (Exception e) {
-            log("[DDL-Thread] DDL线程异常: " + e.getMessage());
+            log("[DDL-Thread] DDL线程错误: " + e.getMessage());
             e.printStackTrace();
         }
     }
@@ -437,9 +439,13 @@ public class DruidLongQueryExample {
      * 关闭连接池
      */
     public static void closeDataSource() {
-        if (dataSource != null) {
-            dataSource.close();
-            System.out.println("Druid connection pool closed");
+        if (primaryDataSource != null) {
+            primaryDataSource.close();
+            log("Primary connection pool closed");
+        }
+        if (replicaDataSource != null) {
+            replicaDataSource.close();
+            log("Replica connection pool closed");
         }
     }
 
@@ -447,14 +453,32 @@ public class DruidLongQueryExample {
      * 打印连接池状态
      */
     public static void printPoolStatus() {
-        if (dataSource != null) {
-            log("\n===== Druid Connection Pool Status [" + dateFormat.format(new Date()) + "] =====");
-            log("Active connections: " + dataSource.getActiveCount());
-            log("Idle connections: " + dataSource.getPoolingCount());
-            log("Waiting threads: " + dataSource.getWaitThreadCount());
-            log("Total connections created: " + dataSource.getCreateCount());
-            log("Total connections destroyed: " + dataSource.getDestroyCount());
-            log("Connection errors: " + dataSource.getErrorCount());
+        printPrimaryPoolStatus();
+        printReplicaPoolStatus();
+    }
+    
+    public static void printPrimaryPoolStatus() {
+        if (primaryDataSource != null) {
+            log("\n===== PRIMARY Connection Pool Status [" + dateFormat.format(new Date()) + "] =====");
+            log("Active connections: " + primaryDataSource.getActiveCount());
+            log("Idle connections: " + primaryDataSource.getPoolingCount());
+            log("Waiting threads: " + primaryDataSource.getWaitThreadCount());
+            log("Total connections created: " + primaryDataSource.getCreateCount());
+            log("Total connections destroyed: " + primaryDataSource.getDestroyCount());
+            log("Connection errors: " + primaryDataSource.getErrorCount());
+            log("===========================================================\n");
+        }
+    }
+    
+    public static void printReplicaPoolStatus() {
+        if (replicaDataSource != null) {
+            log("\n===== READ REPLICA Connection Pool Status [" + dateFormat.format(new Date()) + "] =====");
+            log("Active connections: " + replicaDataSource.getActiveCount());
+            log("Idle connections: " + replicaDataSource.getPoolingCount());
+            log("Waiting threads: " + replicaDataSource.getWaitThreadCount());
+            log("Total connections created: " + replicaDataSource.getCreateCount());
+            log("Total connections destroyed: " + replicaDataSource.getDestroyCount());
+            log("Connection errors: " + replicaDataSource.getErrorCount());
             log("===========================================================\n");
         }
     }
@@ -467,89 +491,73 @@ public class DruidLongQueryExample {
     }
 
     /**
-     * 主方法 - 配置不同的测试场景
+     * 主方法 - 单线程慢查询 + DDL干扰模式（复现Read Replica lag场景）
      */
     public static void main(String[] args) {
         try {
             log("========================================");
-            log("  Druid Database Disconnection Testing Tool");
-            log("  Environment: AWS");
+            log("  Druid Replica Lag Testing Tool");
+            log("  Environment: AWS Aurora (Primary + Read Replica)");
             log("========================================\n");
             
-            // 打印AWS环境信息（如果设置了环境变量）
-            String awsRegion = System.getenv("AWS_REGION");
-            String ec2InstanceId = System.getenv("EC2_INSTANCE_ID");
-            if (awsRegion != null) {
-                log("AWS Region: " + awsRegion);
-            }
-            if (ec2InstanceId != null) {
-                log("EC2 Instance ID: " + ec2InstanceId);
-            }
-            
             // 1. 初始化连接池
-            initDataSource();
+            initDataSources();
             printPoolStatus();
             
-            // 2. 初始化测试数据（仅H2数据库 - 本地测试用，AWS部署时已注释）
-            // if (DB_URL.contains("h2")) {
-            //     initTestData();
-            // }
+            // 2. 定义慢查询SQL（~90秒）
+            final String sql = "SELECT COUNT(*), SUM(t1.col1 * t2.col1) FROM big_table t1, big_table t2 WHERE t1.col1 < 500 AND t2.col1 < 500";
+            log("Test SQL (预计90秒): " + sql + "\n");
             
-            // 高并发慢查询 + DDL干扰压力测试：单线程90秒慢查询 + DDL干扰
-            final String sql = "SELECT COUNT(*), SUM(t1.col1 * t2.col1) " +
-                              "FROM big_table t1, big_table t2 " +
-                              "WHERE t1.col1 < 500 AND t2.col1 < 500 " +
-                              "AND (t1.col2 LIKE '%a%' OR t2.col2 LIKE '%b%')";
-            log("Test SQL: " + sql);
-            final int threadCount = 1; // 生产场景：单线程执行90秒慢SQL
-            final int ddlIntervalSeconds = 30; // DDL干扰间隔（秒）- 更贴近生产场景
+            // 3. 测试参数
+            final int threadCount = 1;  // 单线程
+            final int ddlIntervalSeconds = 30;  // DDL每30秒执行一次
             final long duration = 60 * 60 * 1000; // 1小时
             final long startTime = System.currentTimeMillis();
-            log("生产场景模拟：单线程90秒慢SQL + DDL干扰（每" + ddlIntervalSeconds + "秒），持续1小时");
+            
+            log("测试模式: 单线程慢查询(Read Replica) + DDL干扰(Primary)");
+            log("目的: 复现Primary DDL导致Read Replica lag强制断开场景");
+            log("Thread count: " + threadCount);
+            log("DDL interval: " + ddlIntervalSeconds + "秒");
+            log("Duration: " + duration / 1000 / 60 + "分钟");
             log("Start time: " + dateFormat.format(new Date(startTime)));
             log("预计结束时间: " + dateFormat.format(new Date(startTime + duration)));
             log("Press Ctrl+C to stop anytime\n");
 
-            // 启动DDL干扰线程（等待10秒让慢查询先获取metadata lock）
+            // 4. 启动DDL干扰线程
             Thread ddlThread = new Thread(() -> {
                 try {
-                    Thread.sleep(10000); // 等待10秒，确保慢查询已经开始执行并获取锁
-                    log("[DDL-Thread] *** DDL干扰线程开始工作 ***");
+                    Thread.sleep(10000); // 等待10秒，确保慢查询先开始，获取锁
+                    log("[DDL-Thread] *** DDL干扰线程开始执行 ***\n");
                 } catch (InterruptedException e) {
                     e.printStackTrace();
                 }
                 executeDDLInterference(ddlIntervalSeconds);
             }, "DDL-Interference-Thread");
-            ddlThread.setDaemon(true); // 设置为守护线程，主线程结束时自动终止
+            ddlThread.setDaemon(true);
             ddlThread.start();
-            log("DDL干扰线程已启动（将在10秒后开始干扰，确保慢查询先获取锁）\n");
+            log("DDL干扰线程已启动，将等待10秒后开始干扰，确保慢查询先获取锁！\n");
 
+            // 5. 启动慢查询线程（只执行一次）
             Thread[] threads = new Thread[threadCount];
             for (int i = 0; i < threadCount; i++) {
                 final int threadId = i + 1;
                 threads[i] = new Thread(() -> {
-                    int cycleCount = 0;
-                    log("[Thread-" + threadId + "] Started");
-                    while (System.currentTimeMillis() < startTime + duration) {
-                        cycleCount++;
-                        log("[Thread-" + threadId + "] === Cycle #" + cycleCount + " ===");
-                        try {
-                            executeLongQuery(sql);
-                        } catch (Exception e) {
-                            log("[Thread-" + threadId + "] Exception: " + e.getMessage());
-                        }
+                    log("[Thread-" + threadId + "] Started on READ REPLICA - Single execution mode");
+                    log("[Thread-" + threadId + "] === Executing Long Query ===");
+                    try {
+                        executeLongQuery(sql);
+                        log("[Thread-" + threadId + "] Completed successfully");
+                    } catch (Exception e) {
+                        log("[Thread-" + threadId + "] Exception: " + e.getMessage());
+                        e.printStackTrace();
                     }
-                    log("[Thread-" + threadId + "] Completed. Total cycles: " + cycleCount);
                 }, "SlowQueryThread-" + (i + 1));
                 threads[i].start();
-                log("Thread-" + threadId + " started");
-                try {
-                    Thread.sleep(200); // 更快地启动所有线程
-                } catch (InterruptedException e) {
-                    e.printStackTrace();
-                }
+                log("Thread-" + threadId + " started on Read Replica");
             }
-            log("\nAll threads started, running aggressive slow-query test...");
+            
+            log("\n所有线程已启动，开始测试...\n");
+            
             for (int i = 0; i < threadCount; i++) {
                 try {
                     threads[i].join();
@@ -557,6 +565,7 @@ public class DruidLongQueryExample {
                     e.printStackTrace();
                 }
             }
+            
             log("\n========== All Threads Completed ==========");
             log("Total duration: " + (System.currentTimeMillis() - startTime) / 1000.0 / 60.0 + " minutes");
             printPoolStatus();
