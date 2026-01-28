@@ -484,11 +484,11 @@ public class DruidLongQueryExample {
             // 高并发慢查询 + DDL干扰压力测试：40线程并发慢查询 + 1个DDL干扰线程
             final String sql = "SELECT COUNT(*), MAX(col1), AVG(col1) FROM big_table WHERE col2 LIKE '%a%' OR col1 > 100";
             log("Test SQL: " + sql);
-            final int threadCount = 60;
+            final int threadCount = 1;
             final int ddlIntervalSeconds = 5; // DDL干扰间隔（秒）- 激进模式
             final long duration = 60 * 60 * 1000; // 1小时
             final long startTime = System.currentTimeMillis();
-            log("激进资源竞争模式：60线程并发抢占10个连接 + DDL干扰（每" + ddlIntervalSeconds + "秒），持续1小时");
+            log("单线程慢查询 + DDL干扰模式：1线程慢查询 + DDL干扰（每" + ddlIntervalSeconds + "秒），持续1小时");
             log("Start time: " + dateFormat.format(new Date(startTime)));
             log("预计结束时间: " + dateFormat.format(new Date(startTime + duration)));
             log("Press Ctrl+C to stop anytime\n");
