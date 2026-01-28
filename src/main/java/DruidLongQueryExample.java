@@ -366,38 +366,49 @@ public class DruidLongQueryExample {
         try {
             log("[DDL-Thread] DDL干扰线程启动，每" + intervalSeconds + "秒执行一次DDL操作");
             
-            int ddlIndex = 0;
+            int ddlCycle = 0;
             
             while (true) {
                 Thread.sleep(intervalSeconds * 1000);
+                ddlCycle++;
                 
-                // 动态生成DDL操作，避免列名冲突
+                // 每次循环执行一组完整的DDL操作
                 String tempColName = "temp_col_" + System.currentTimeMillis();
-                String tempIdxName = "idx_temp_" + System.currentTimeMillis();
-                
-                String[] ddlOperations = {
-                    "ALTER TABLE big_table ADD COLUMN " + tempColName + " VARCHAR(500)",
-                    "UPDATE big_table SET " + tempColName + " = REPEAT('X', 500) WHERE MOD(col1, 5) = 0",
-                    "ALTER TABLE big_table DROP COLUMN " + tempColName,
-                    "CREATE INDEX " + tempIdxName + " ON big_table(col1)",
-                    "DROP INDEX " + tempIdxName + " ON big_table",
-                    "OPTIMIZE TABLE big_table"
-                };
-                
-                String ddl = ddlOperations[ddlIndex % ddlOperations.length];
-                ddlIndex++;
-                
-                log("[DDL-Thread] 准备执行DDL #" + ddlIndex + ": " + ddl);
                 
                 try {
+                    // 操作1: ADD COLUMN
+                    log("[DDL-Thread] 准备执行DDL Cycle #" + ddlCycle + " - Step 1: ADD COLUMN");
                     conn = dataSource.getConnection();
                     stmt = conn.createStatement();
-                    
                     long startTime = System.currentTimeMillis();
-                    stmt.execute(ddl);
-                    long duration = System.currentTimeMillis() - startTime;
+                    stmt.execute("ALTER TABLE big_table ADD COLUMN " + tempColName + " VARCHAR(500)");
+                    log("[DDL-Thread] ✓ ADD COLUMN成功，耗时: " + (System.currentTimeMillis() - startTime) + "ms");
+                    stmt.close();
+                    conn.close();
                     
-                    log("[DDL-Thread] ✓ DDL执行成功，耗时: " + duration + "ms");
+                    Thread.sleep(1000);
+                    
+                    // 操作2: UPDATE
+                    log("[DDL-Thread] 准备执行DDL Cycle #" + ddlCycle + " - Step 2: UPDATE");
+                    conn = dataSource.getConnection();
+                    stmt = conn.createStatement();
+                    startTime = System.currentTimeMillis();
+                    stmt.execute("UPDATE big_table SET " + tempColName + " = REPEAT('X', 500) WHERE MOD(col1, 5) = 0");
+                    log("[DDL-Thread] ✓ UPDATE成功，耗时: " + (System.currentTimeMillis() - startTime) + "ms");
+                    stmt.close();
+                    conn.close();
+                    
+                    Thread.sleep(1000);
+                    
+                    // 操作3: DROP COLUMN
+                    log("[DDL-Thread] 准备执行DDL Cycle #" + ddlCycle + " - Step 3: DROP COLUMN");
+                    conn = dataSource.getConnection();
+                    stmt = conn.createStatement();
+                    startTime = System.currentTimeMillis();
+                    stmt.execute("ALTER TABLE big_table DROP COLUMN " + tempColName);
+                    log("[DDL-Thread] ✓ DROP COLUMN成功，耗时: " + (System.currentTimeMillis() - startTime) + "ms");
+                    stmt.close();
+                    conn.close();
                     
                 } catch (SQLException e) {
                     log("[DDL-Thread] ✗ DDL执行失败: " + e.getMessage());
