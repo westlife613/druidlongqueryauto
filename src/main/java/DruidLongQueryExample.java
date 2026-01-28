@@ -72,10 +72,10 @@ public class DruidLongQueryExample {
         }
         
        
-        dataSource.setInitialSize(15);                    // 初始化15个连接
-        dataSource.setMinIdle(2);                         // 最小保持2个空闲连接
-        dataSource.setMaxActive(20);                      // 最大20个连接（10查询+1DDL+预留）
-        dataSource.setMaxWait(120000);                    // 获取连接最大等待时间(毫秒)
+        dataSource.setInitialSize(5);                    // 初始化15个连接
+        dataSource.setMinIdle(5);                         // 最小保持2个空闲连接
+        dataSource.setMaxActive(60);                      // 最大20个连接（10查询+1DDL+预留）
+        dataSource.setMaxWait(30000);                    // 获取连接最大等待时间(毫秒)
         
         // ===== AWS生产环境配置（与现有Druid配置保持一致）=====
         dataSource.setKeepAlive(true);                    // 开启keepAlive保持连接
@@ -97,7 +97,7 @@ public class DruidLongQueryExample {
             "druid.stat.mergeSql=true;" +
             "druid.stat.slowSqlMillis=5000;" +
             "connectTimeout=90000;" +                     // 连接超时90秒
-            "socketTimeout=0;" +                          // Socket超时设置为0（无超时，支持SLEEP(660)长查询）
+            "socketTimeout=90000;" +                          // Socket超时设置为0（无超时，支持SLEEP(660)长查询）
             "useSSL=false;" +                             // 本地测试不使用SSL
             "requireSSL=false"                            // 不强制SSL
         );
@@ -510,10 +510,10 @@ public class DruidLongQueryExample {
             log("预计结束时间: " + dateFormat.format(new Date(startTime + duration)));
             log("Press Ctrl+C to stop anytime\n");
 
-            // 启动DDL干扰线程（先等待3秒让慢查询先启动）
+            // 启动DDL干扰线程（等待10秒让慢查询先获取metadata lock）
             Thread ddlThread = new Thread(() -> {
                 try {
-                    Thread.sleep(3000); // 等待3秒，确保慢查询先开始执行
+                    Thread.sleep(10000); // 等待10秒，确保慢查询已经开始执行并获取锁
                     log("[DDL-Thread] *** DDL干扰线程开始工作 ***");
                 } catch (InterruptedException e) {
                     e.printStackTrace();
@@ -522,7 +522,7 @@ public class DruidLongQueryExample {
             }, "DDL-Interference-Thread");
             ddlThread.setDaemon(true); // 设置为守护线程，主线程结束时自动终止
             ddlThread.start();
-            log("DDL干扰线程已启动（将在3秒后开始干扰）\n");
+            log("DDL干扰线程已启动（将在10秒后开始干扰，确保慢查询先获取锁）\n");
 
             Thread[] threads = new Thread[threadCount];
             for (int i = 0; i < threadCount; i++) {
