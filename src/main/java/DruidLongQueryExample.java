@@ -507,41 +507,44 @@ public class DruidLongQueryExample {
             // 2. 定义慢查询SQL - 使用临时表的复杂查询（更接近生产环境）
             // 生产环境触发条件：Replica执行UPDATE/DELETE + 临时表 + Primary执行DDL
             // 这里用强制临时表的SELECT模拟（GROUP BY + ORDER BY + UNION）
+            // 注意：需要让查询运行超过90秒才能触发Aurora断开机制！
             
-            // 查询1：GROUP BY + ORDER BY 强制临时表
-            final String sql1 = "SELECT col1, col2, COUNT(*) as cnt FROM big_table " +
-                               "WHERE col1 < 500000 " +
-                               "GROUP BY col1, col2 " +
-                               "ORDER BY cnt DESC, col1 ASC " +
-                               "LIMIT 500000";
+            // 查询1：笛卡尔积 + GROUP BY + ORDER BY（最慢，预计5-10分钟）
+            final String sql1 = "SELECT t1.col1, t1.col2, COUNT(*) as cnt " +
+                               "FROM big_table t1, big_table t2 " +
+                               "WHERE t1.col1 < 800 AND t2.col1 < 800 " +
+                               "GROUP BY t1.col1, t1.col2 " +
+                               "ORDER BY cnt DESC, t1.col1 ASC";
             
-            // 查询2：UNION 强制临时表
-            final String sql2 = "(SELECT col1, col2, 'A' as tag FROM big_table WHERE col1 < 200000) " +
-                               "UNION " +
-                               "(SELECT col1, col2, 'B' as tag FROM big_table WHERE col1 >= 200000 AND col1 < 400000) " +
-                               "UNION " +
-                               "(SELECT col1, col2, 'C' as tag FROM big_table WHERE col1 >= 400000 AND col1 < 600000) " +
+            // 查询2：笛卡尔积 + UNION 强制临时表
+            final String sql2 = "(SELECT t1.col1, t1.col2, SUM(t2.col1) as total FROM big_table t1, big_table t2 " +
+                               "WHERE t1.col1 < 600 AND t2.col1 < 600 GROUP BY t1.col1, t1.col2) " +
+                               "UNION ALL " +
+                               "(SELECT t1.col1, t1.col2, AVG(t2.col1) as total FROM big_table t1, big_table t2 " +
+                               "WHERE t1.col1 < 600 AND t2.col1 < 600 GROUP BY t1.col1, t1.col2) " +
                                "ORDER BY col1";
             
-            // 查询3：GROUP_CONCAT + GROUP BY（大量内存临时表）
-            final String sql3 = "SELECT col1, GROUP_CONCAT(col2 ORDER BY col2 SEPARATOR ',') as all_col2 " +
-                               "FROM big_table " +
-                               "WHERE col1 < 100000 " +
-                               "GROUP BY col1 " +
-                               "ORDER BY col1";
+            // 查询3：笛卡尔积 + GROUP_CONCAT（大量内存临时表）
+            final String sql3 = "SELECT t1.col1, GROUP_CONCAT(DISTINCT t2.col2 ORDER BY t2.col2 SEPARATOR ',') as all_col2 " +
+                               "FROM big_table t1, big_table t2 " +
+                               "WHERE t1.col1 < 500 AND t2.col1 < 500 " +
+                               "GROUP BY t1.col1 " +
+                               "ORDER BY t1.col1";
             
-            // 查询4：子查询 + JOIN + 临时表
-            final String sql4 = "SELECT a.col1, a.col2, b.cnt " +
+            // 查询4：笛卡尔积 + 子查询 + JOIN + 临时表
+            final String sql4 = "SELECT a.col1, a.col2, b.total_sum " +
                                "FROM big_table a " +
-                               "JOIN (SELECT col1, COUNT(*) as cnt FROM big_table WHERE col1 < 300000 GROUP BY col1) b " +
+                               "JOIN (SELECT t1.col1, SUM(t1.col1 * t2.col1) as total_sum " +
+                               "      FROM big_table t1, big_table t2 " +
+                               "      WHERE t1.col1 < 700 AND t2.col1 < 700 " +
+                               "      GROUP BY t1.col1) b " +
                                "ON a.col1 = b.col1 " +
-                               "WHERE a.col1 < 300000 " +
-                               "ORDER BY b.cnt DESC, a.col1";
+                               "ORDER BY b.total_sum DESC, a.col1";
             
             // 使用所有查询轮流测试
             final String[] testSQLs = {sql1, sql2, sql3, sql4};
             
-            log("========== 测试SQL列表（全部使用临时表）==========");
+            log("========== 测试SQL列表（笛卡尔积 + 临时表，预计每个5-10分钟）==========");
             for (int i = 0; i < testSQLs.length; i++) {
                 log("SQL" + (i+1) + ": " + testSQLs[i].substring(0, Math.min(100, testSQLs[i].length())) + "...");
             }
