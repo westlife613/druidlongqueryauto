@@ -509,14 +509,14 @@ public class DruidLongQueryExample {
             log("Test SQL (预计90秒): " + sql + "\n");
             
             // 3. 测试参数
-            final int threadCount = 1;  // 单线程
+            final int threadCount = 10;  // 并发10个查询线程
             final int ddlIntervalSeconds = 30;  // DDL每30秒执行一次
             final long duration = 60 * 60 * 1000; // 1小时
             final long startTime = System.currentTimeMillis();
             
-            log("测试模式: 单线程慢查询(Read Replica) + DDL干扰(Primary)");
+            log("测试模式: 并发多线程慢查询(Read Replica) + DDL干扰(Primary)");
             log("目的: 复现Primary DDL导致Read Replica lag强制断开场景");
-            log("Thread count: " + threadCount);
+            log("Thread count: " + threadCount + " 个并发查询");
             log("DDL interval: " + ddlIntervalSeconds + "秒");
             log("Duration: " + duration / 1000 / 60 + "分钟");
             log("Start time: " + dateFormat.format(new Date(startTime)));
@@ -537,15 +537,19 @@ public class DruidLongQueryExample {
             ddlThread.start();
             log("DDL干扰线程已启动，将等待10秒后开始干扰，确保慢查询先获取锁！\n");
 
-            // 5. 启动慢查询线程（只执行一次）
+            // 5. 启动多个慢查询线程（并发执行，只执行一次）
             Thread[] threads = new Thread[threadCount];
             for (int i = 0; i < threadCount; i++) {
                 final int threadId = i + 1;
+                // 每个线程使用不同的查询范围，避免完全相同
+                final int queryRange = 500 + (i * 50); // 500, 550, 600, 650...
+                final String threadSql = "SELECT COUNT(*), SUM(t1.col1 * t2.col1) FROM big_table t1, big_table t2 WHERE t1.col1 < " + queryRange + " AND t2.col1 < " + queryRange;
+                
                 threads[i] = new Thread(() -> {
-                    log("[Thread-" + threadId + "] Started on READ REPLICA - Single execution mode");
+                    log("[Thread-" + threadId + "] Started on READ REPLICA - Range: " + queryRange + "x" + queryRange);
                     log("[Thread-" + threadId + "] === Executing Long Query ===");
                     try {
-                        executeLongQuery(sql);
+                        executeLongQuery(threadSql);
                         log("[Thread-" + threadId + "] Completed successfully");
                     } catch (Exception e) {
                         log("[Thread-" + threadId + "] Exception: " + e.getMessage());
@@ -553,10 +557,17 @@ public class DruidLongQueryExample {
                     }
                 }, "SlowQueryThread-" + (i + 1));
                 threads[i].start();
-                log("Thread-" + threadId + " started on Read Replica");
+                log("Thread-" + threadId + " started on Read Replica (Range: " + queryRange + "x" + queryRange + ")");
+                
+                // 稍微错开启动时间，避免完全同时启动
+                try {
+                    Thread.sleep(500);
+                } catch (InterruptedException e) {
+                    e.printStackTrace();
+                }
             }
             
-            log("\n所有线程已启动，开始测试...\n");
+            log("\n所有 " + threadCount + " 个并发查询线程已启动，开始测试...\n");
             
             for (int i = 0; i < threadCount; i++) {
                 try {
