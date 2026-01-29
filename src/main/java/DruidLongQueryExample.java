@@ -504,19 +504,58 @@ public class DruidLongQueryExample {
             initDataSources();
             printPoolStatus();
             
-            // 2. 定义慢查询SQL（~90秒）
-            final String sql = "SELECT COUNT(*), SUM(t1.col1 * t2.col1) FROM big_table t1, big_table t2 WHERE t1.col1 < 500 AND t2.col1 < 500";
-            log("Test SQL (预计90秒): " + sql + "\n");
+            // 2. 定义慢查询SQL - 使用临时表的复杂查询（更接近生产环境）
+            // 生产环境触发条件：Replica执行UPDATE/DELETE + 临时表 + Primary执行DDL
+            // 这里用强制临时表的SELECT模拟（GROUP BY + ORDER BY + UNION）
+            
+            // 查询1：GROUP BY + ORDER BY 强制临时表
+            final String sql1 = "SELECT col1, col2, COUNT(*) as cnt FROM big_table " +
+                               "WHERE col1 < 500000 " +
+                               "GROUP BY col1, col2 " +
+                               "ORDER BY cnt DESC, col1 ASC " +
+                               "LIMIT 500000";
+            
+            // 查询2：UNION 强制临时表
+            final String sql2 = "(SELECT col1, col2, 'A' as tag FROM big_table WHERE col1 < 200000) " +
+                               "UNION " +
+                               "(SELECT col1, col2, 'B' as tag FROM big_table WHERE col1 >= 200000 AND col1 < 400000) " +
+                               "UNION " +
+                               "(SELECT col1, col2, 'C' as tag FROM big_table WHERE col1 >= 400000 AND col1 < 600000) " +
+                               "ORDER BY col1";
+            
+            // 查询3：GROUP_CONCAT + GROUP BY（大量内存临时表）
+            final String sql3 = "SELECT col1, GROUP_CONCAT(col2 ORDER BY col2 SEPARATOR ',') as all_col2 " +
+                               "FROM big_table " +
+                               "WHERE col1 < 100000 " +
+                               "GROUP BY col1 " +
+                               "ORDER BY col1";
+            
+            // 查询4：子查询 + JOIN + 临时表
+            final String sql4 = "SELECT a.col1, a.col2, b.cnt " +
+                               "FROM big_table a " +
+                               "JOIN (SELECT col1, COUNT(*) as cnt FROM big_table WHERE col1 < 300000 GROUP BY col1) b " +
+                               "ON a.col1 = b.col1 " +
+                               "WHERE a.col1 < 300000 " +
+                               "ORDER BY b.cnt DESC, a.col1";
+            
+            // 使用所有查询轮流测试
+            final String[] testSQLs = {sql1, sql2, sql3, sql4};
+            
+            log("========== 测试SQL列表（全部使用临时表）==========");
+            for (int i = 0; i < testSQLs.length; i++) {
+                log("SQL" + (i+1) + ": " + testSQLs[i].substring(0, Math.min(100, testSQLs[i].length())) + "...");
+            }
+            log("================================================\n");
             
             // 3. 测试参数
-            final int threadCount = 10;  // 并发10个查询线程
+            final int threadCount = 4;  // 4个线程，每个执行不同的临时表SQL
             final int ddlIntervalSeconds = 30;  // DDL每30秒执行一次
             final long duration = 60 * 60 * 1000; // 1小时
             final long startTime = System.currentTimeMillis();
             
-            log("测试模式: 并发多线程慢查询(Read Replica) + DDL干扰(Primary)");
-            log("目的: 复现Primary DDL导致Read Replica lag强制断开场景");
-            log("Thread count: " + threadCount + " 个并发查询");
+            log("测试模式: 多线程复杂查询(使用临时表) + DDL干扰(Primary)");
+            log("目的: 复现 Replica临时表查询 + Primary DDL 导致元数据锁冲突强制断开场景");
+            log("Thread count: " + threadCount + " (每个线程执行不同的临时表SQL)");
             log("DDL interval: " + ddlIntervalSeconds + "秒");
             log("Duration: " + duration / 1000 / 60 + "分钟");
             log("Start time: " + dateFormat.format(new Date(startTime)));
@@ -537,27 +576,27 @@ public class DruidLongQueryExample {
             ddlThread.start();
             log("DDL干扰线程已启动，将等待10秒后开始干扰，确保慢查询先获取锁！\n");
 
-            // 5. 启动多个慢查询线程（并发执行，只执行一次）
+            // 5. 启动多个慢查询线程（并发执行，使用不同的临时表SQL）
             Thread[] threads = new Thread[threadCount];
             for (int i = 0; i < threadCount; i++) {
                 final int threadId = i + 1;
-                // 每个线程使用不同的查询范围，避免完全相同
-                final int queryRange = 500 + (i * 50); // 500, 550, 600, 650...
-                final String threadSql = "SELECT COUNT(*), SUM(t1.col1 * t2.col1) FROM big_table t1, big_table t2 WHERE t1.col1 < " + queryRange + " AND t2.col1 < " + queryRange;
+                // 每个线程使用不同的临时表SQL
+                final String threadSql = testSQLs[i % testSQLs.length];
+                final String sqlType = "SQL" + ((i % testSQLs.length) + 1);
                 
                 threads[i] = new Thread(() -> {
-                    log("[Thread-" + threadId + "] Started on READ REPLICA - Range: " + queryRange + "x" + queryRange);
-                    log("[Thread-" + threadId + "] === Executing Long Query ===");
+                    log("[Thread-" + threadId + "] Started on READ REPLICA - 执行 " + sqlType + " (临时表查询)");
+                    log("[Thread-" + threadId + "] === Executing Long Query with Temp Table ===");
                     try {
                         executeLongQuery(threadSql);
                         log("[Thread-" + threadId + "] Completed successfully");
                     } catch (Exception e) {
-                        log("[Thread-" + threadId + "] Exception: " + e.getMessage());
+                        log("[Thread-" + threadId + "] ★★★ Exception: " + e.getMessage() + " ★★★");
                         e.printStackTrace();
                     }
                 }, "SlowQueryThread-" + (i + 1));
                 threads[i].start();
-                log("Thread-" + threadId + " started on Read Replica (Range: " + queryRange + "x" + queryRange + ")");
+                log("Thread-" + threadId + " started on Read Replica (" + sqlType + " - 使用临时表)");
                 
                 // 稍微错开启动时间，避免完全同时启动
                 try {
