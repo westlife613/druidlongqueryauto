@@ -491,135 +491,57 @@ public class DruidLongQueryExample {
     }
 
     /**
-     * 主方法 - 单线程慢查询 + DDL干扰模式（复现Read Replica lag场景）
+     * 主方法 - 简单 SLEEP 查询模式
+     * DDL 由另一个实例执行
      */
     public static void main(String[] args) {
         try {
             log("========================================");
-            log("  Druid Replica Lag Testing Tool");
-            log("  Environment: AWS Aurora (Primary + Read Replica)");
+            log("  Druid Long Query Testing Tool");
+            log("  Mode: SELECT SLEEP(15) - 简单长查询");
+            log("  Note: DDL 需要在另一个实例上执行");
             log("========================================\n");
             
             // 1. 初始化连接池
             initDataSources();
             printPoolStatus();
             
-            // 2. 定义慢查询SQL - 使用临时表的复杂查询（更接近生产环境）
-            // 生产环境触发条件：Replica执行UPDATE/DELETE + 临时表 + Primary执行DDL
-            // 这里用强制临时表的SELECT模拟（GROUP BY + ORDER BY + UNION）
-            // 注意：范围不能太大，否则会撑爆临时表空间！
-            
-            // 查询1：笛卡尔积 + GROUP BY + ORDER BY（预计3-5分钟）
-            final String sql1 = "SELECT t1.col1, t1.col2, COUNT(*) as cnt " +
-                               "FROM big_table t1, big_table t2 " +
-                               "WHERE t1.col1 < 400 AND t2.col1 < 400 " +
-                               "GROUP BY t1.col1, t1.col2 " +
-                               "ORDER BY cnt DESC, t1.col1 ASC";
-            
-            // 查询2：笛卡尔积 + UNION 强制临时表
-            final String sql2 = "(SELECT t1.col1, t1.col2, SUM(t2.col1) as total FROM big_table t1, big_table t2 " +
-                               "WHERE t1.col1 < 350 AND t2.col1 < 350 GROUP BY t1.col1, t1.col2) " +
-                               "UNION ALL " +
-                               "(SELECT t1.col1, t1.col2, AVG(t2.col1) as total FROM big_table t1, big_table t2 " +
-                               "WHERE t1.col1 < 350 AND t2.col1 < 350 GROUP BY t1.col1, t1.col2) " +
-                               "ORDER BY col1";
-            
-            // 查询3：笛卡尔积 + GROUP_CONCAT（大量内存临时表）
-            final String sql3 = "SELECT t1.col1, GROUP_CONCAT(DISTINCT t2.col2 ORDER BY t2.col2 SEPARATOR ',') as all_col2 " +
-                               "FROM big_table t1, big_table t2 " +
-                               "WHERE t1.col1 < 300 AND t2.col1 < 300 " +
-                               "GROUP BY t1.col1 " +
-                               "ORDER BY t1.col1";
-            
-            // 查询4：笛卡尔积 + 子查询 + JOIN + 临时表
-            final String sql4 = "SELECT a.col1, a.col2, b.total_sum " +
-                               "FROM big_table a " +
-                               "JOIN (SELECT t1.col1, SUM(t1.col1 * t2.col1) as total_sum " +
-                               "      FROM big_table t1, big_table t2 " +
-                               "      WHERE t1.col1 < 400 AND t2.col1 < 400 " +
-                               "      GROUP BY t1.col1) b " +
-                               "ON a.col1 = b.col1 " +
-                               "ORDER BY b.total_sum DESC, a.col1";
-            
-            // 使用所有查询轮流测试
-            final String[] testSQLs = {sql1, sql2, sql3, sql4};
-            
-            log("========== 测试SQL列表（笛卡尔积 + 临时表，预计每个3-5分钟）==========");
-            for (int i = 0; i < testSQLs.length; i++) {
-                log("SQL" + (i+1) + ": " + testSQLs[i].substring(0, Math.min(100, testSQLs[i].length())) + "...");
-            }
-            log("================================================\n");
+            // 2. 定义慢查询SQL - SLEEP 15秒
+            // 目的：复现 Aurora 在 DDL 执行时断开正在执行的 SQL 连接
+            final String sleepSQL = "SELECT SLEEP(15)";
             
             // 3. 测试参数
-            final int threadCount = 4;  // 4个线程，每个执行不同的临时表SQL
-            final int ddlIntervalSeconds = 30;  // DDL每30秒执行一次
-            final long duration = 60 * 60 * 1000; // 1小时
+            final int threadCount = 1;  // 单线程执行
+            final int loopCount = 100;  // 循环执行次数
             final long startTime = System.currentTimeMillis();
             
-            log("测试模式: 多线程复杂查询(使用临时表) + DDL干扰(Primary)");
-            log("目的: 复现 Replica临时表查询 + Primary DDL 导致元数据锁冲突强制断开场景");
-            log("Thread count: " + threadCount + " (每个线程执行不同的临时表SQL)");
-            log("DDL interval: " + ddlIntervalSeconds + "秒");
-            log("Duration: " + duration / 1000 / 60 + "分钟");
+            log("测试模式: SELECT SLEEP(15) 循环执行");
+            log("目的: 复现 Aurora DDL 执行时断开正在执行的 SQL 连接");
+            log("Thread count: " + threadCount);
+            log("Loop count: " + loopCount);
+            log("Each query duration: 15 seconds");
+            log("SQL: " + sleepSQL);
             log("Start time: " + dateFormat.format(new Date(startTime)));
-            log("预计结束时间: " + dateFormat.format(new Date(startTime + duration)));
+            log("预计总时间: " + (15 * loopCount / 60) + " 分钟");
+            log("NOTE: 请在另一个实例上执行 DDL 操作（约15秒）进行干扰测试");
             log("Press Ctrl+C to stop anytime\n");
 
-            // 4. 启动DDL干扰线程
-            Thread ddlThread = new Thread(() -> {
+            // 4. 循环执行 SLEEP 查询
+            for (int i = 1; i <= loopCount; i++) {
+                log("\n========== Loop " + i + "/" + loopCount + " ==========");
                 try {
-                    Thread.sleep(10000); // 等待10秒，确保慢查询先开始，获取锁
-                    log("[DDL-Thread] *** DDL干扰线程开始执行 ***\n");
-                } catch (InterruptedException e) {
+                    executeLongQuery(sleepSQL);
+                    log("Loop " + i + " completed successfully");
+                } catch (Exception e) {
+                    log("Loop " + i + " ★★★ Exception: " + e.getMessage() + " ★★★");
                     e.printStackTrace();
                 }
-                executeDDLInterference(ddlIntervalSeconds);
-            }, "DDL-Interference-Thread");
-            ddlThread.setDaemon(true);
-            ddlThread.start();
-            log("DDL干扰线程已启动，将等待10秒后开始干扰，确保慢查询先获取锁！\n");
-
-            // 5. 启动多个慢查询线程（并发执行，使用不同的临时表SQL）
-            Thread[] threads = new Thread[threadCount];
-            for (int i = 0; i < threadCount; i++) {
-                final int threadId = i + 1;
-                // 每个线程使用不同的临时表SQL
-                final String threadSql = testSQLs[i % testSQLs.length];
-                final String sqlType = "SQL" + ((i % testSQLs.length) + 1);
                 
-                threads[i] = new Thread(() -> {
-                    log("[Thread-" + threadId + "] Started on READ REPLICA - 执行 " + sqlType + " (临时表查询)");
-                    log("[Thread-" + threadId + "] === Executing Long Query with Temp Table ===");
-                    try {
-                        executeLongQuery(threadSql);
-                        log("[Thread-" + threadId + "] Completed successfully");
-                    } catch (Exception e) {
-                        log("[Thread-" + threadId + "] ★★★ Exception: " + e.getMessage() + " ★★★");
-                        e.printStackTrace();
-                    }
-                }, "SlowQueryThread-" + (i + 1));
-                threads[i].start();
-                log("Thread-" + threadId + " started on Read Replica (" + sqlType + " - 使用临时表)");
-                
-                // 稍微错开启动时间，避免完全同时启动
-                try {
-                    Thread.sleep(500);
-                } catch (InterruptedException e) {
-                    e.printStackTrace();
-                }
+                // 每轮之间短暂等待
+                Thread.sleep(1000);
             }
             
-            log("\n所有 " + threadCount + " 个并发查询线程已启动，开始测试...\n");
-            
-            for (int i = 0; i < threadCount; i++) {
-                try {
-                    threads[i].join();
-                } catch (InterruptedException e) {
-                    e.printStackTrace();
-                }
-            }
-            
-            log("\n========== All Threads Completed ==========");
+            log("\n========== All Loops Completed ==========");
             log("Total duration: " + (System.currentTimeMillis() - startTime) / 1000.0 / 60.0 + " minutes");
             printPoolStatus();
         } catch (Exception e) {
