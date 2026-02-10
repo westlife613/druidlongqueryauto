@@ -376,39 +376,43 @@ public class DruidLongQueryExample {
         try {
             log("========================================");
             log("  Druid Long Query Testing Tool");
-            log("  Mode: SELECT SLEEP(15) - 简单长查询");
-            log("  Note: DDL 需要在另一个实例上执行");
+            log("  Mode: 真实长查询 - 全表扫描+聚合");
+            log("  Note: DDL 需要在 Primary 上执行");
             log("========================================\n");
             
             // 1. 初始化连接池
             initDataSource();
             printPoolStatus();
             
-            // 2. 定义慢查询SQL - SLEEP 15秒
+            // 2. 定义慢查询SQL - 查询 big_table 真实数据
             // 目的：复现 Aurora 在 DDL 执行时断开正在执行的 SQL 连接
-            final String sleepSQL = "SELECT SLEEP(15)";
+            // 使用同一张表 big_table，这样 DDL (CREATE INDEX) 和 SELECT 会产生 metadata lock 冲突
+            // 查询会扫描全表并做聚合，执行时间取决于数据量
+            final String longQuerySQL = "SELECT col1, col2, COUNT(*) as cnt, SUM(col1) as total FROM big_table GROUP BY col1, col2 ORDER BY cnt DESC";
             
             // 3. 测试参数
             final int threadCount = 1;  // 单线程执行
             final int loopCount = 100;  // 循环执行次数
             final long startTime = System.currentTimeMillis();
             
-            log("测试模式: SELECT SLEEP(15) 循环执行");
+            log("测试模式: 对 big_table 执行真实长查询（全表扫描+聚合）");
             log("目的: 复现 Aurora DDL 执行时断开正在执行的 SQL 连接");
+            log("关键: SELECT 和 DDL 操作同一张表 big_table，触发 metadata lock 冲突");
             log("Thread count: " + threadCount);
             log("Loop count: " + loopCount);
-            log("Each query duration: 15 seconds");
-            log("SQL: " + sleepSQL);
+            log("Each query duration: 取决于 big_table 数据量");
+            log("SQL: " + longQuerySQL);
             log("Start time: " + dateFormat.format(new Date(startTime)));
-            log("预计总时间: " + (15 * loopCount / 60) + " 分钟");
-            log("NOTE: 请在另一个实例上执行 DDL 操作（约15秒）进行干扰测试");
+            log("NOTE: 请在 Primary 上对 big_table 执行 DDL 操作:");
+            log("      CREATE INDEX idx_temp_xxx ON big_table(col3);");
+            log("      或 ALTER TABLE big_table ADD COLUMN temp_col INT;");
             log("Press Ctrl+C to stop anytime\n");
 
             // 4. 循环执行 SLEEP 查询
             for (int i = 1; i <= loopCount; i++) {
                 log("\n========== Loop " + i + "/" + loopCount + " ==========");
                 try {
-                    executeLongQuery(sleepSQL);
+                    executeLongQuery(longQuerySQL);
                     log("Loop " + i + " completed successfully");
                 } catch (Exception e) {
                     log("Loop " + i + " ★★★ Exception: " + e.getMessage() + " ★★★");
