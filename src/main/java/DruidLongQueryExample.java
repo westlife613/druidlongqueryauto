@@ -376,39 +376,39 @@ public class DruidLongQueryExample {
         try {
             log("========================================");
             log("  Druid Long Query Testing Tool");
-            log("  Mode: SELECT + SLEEP(10) - 持续10秒的查询");
-            log("  Note: 启动后5秒内在Primary执行DDL");
+            log("  Mode: SELECT + SLEEP(60) - 持续60秒的查询");
+            log("  Note: 查询期间在Primary执行DDL");
             log("========================================\n");
             
             // 1. 初始化连接池
             initDataSource();
             printPoolStatus();
             
-            // 2. 定义慢查询SQL - SELECT + SLEEP 确保持续10秒
+            // 2. 定义慢查询SQL - SELECT + SLEEP 确保持续60秒
             // 目的：复现 Aurora 在 DDL 执行时断开正在执行的 SQL 连接
             // 场景：
-            //   10:00:00 Reader (SELECT) - 开始执行，持续10秒
+            //   10:00:00 Reader (SELECT) - 开始执行，持续60秒
             //   10:00:05 Writer (DDL)    - 5秒后执行 ALTER TABLE
-            //   10:00:06 Reader          - 连接被中断？
-            final String longQuerySQL = "SELECT *, SLEEP(10) FROM big_table LIMIT 1";
+            //   10:00:?? Reader          - 连接被中断？
+            final String longQuerySQL = "SELECT *, SLEEP(60) FROM big_table LIMIT 1";
             
             // 3. 测试参数
             final int threadCount = 1;  // 单线程执行
             final int loopCount = 100;  // 循环执行次数
             final long startTime = System.currentTimeMillis();
             
-            log("测试模式: SELECT *, SLEEP(10) FROM big_table - 每次查询持续10秒");
+            log("测试模式: SELECT *, SLEEP(60) FROM big_table - 每次查询持续60秒");
             log("目的: 复现 Aurora DDL 执行时断开正在执行的 SQL 连接");
             log("======================================================");
             log("  测试步骤:");
-            log("  1. [Reader] Java程序开始执行 SELECT (持续10秒)");
-            log("  2. [Writer] 等待约5秒后，在Primary执行DDL:");
+            log("  1. [Reader] Java程序开始执行 SELECT (持续60秒)");
+            log("  2. [Writer] 在Primary执行DDL:");
             log("     ALTER TABLE big_table ADD COLUMN temp_col INT;");
             log("  3. [Reader] 观察SELECT是否被中断");
             log("======================================================");
             log("Thread count: " + threadCount);
             log("Loop count: " + loopCount);
-            log("Each query duration: 10 seconds (SLEEP)");
+            log("Each query duration: 60 seconds (SLEEP)");
             log("SQL: " + longQuerySQL);
             log("Start time: " + dateFormat.format(new Date(startTime)));
             log("Press Ctrl+C to stop anytime\n");
