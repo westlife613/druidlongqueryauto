@@ -129,9 +129,9 @@ public class DruidLongQueryExample {
             log("✓ Successfully acquired database connection, time taken: " + (connEndTime - connStartTime) + "ms");
             log("Connection object: " + conn.toString());
             
-            // Disable auto-commit to keep transaction open
-            conn.setAutoCommit(false);
-            log("✓ Auto-commit disabled - transaction will remain open without commit");
+            // 保持 auto-commit 开启（默认行为）
+            // conn.setAutoCommit(false);
+            log("✓ Auto-commit enabled (default) - 每条SQL自动提交");
             
             // Create Statement
             stmt = conn.createStatement();
